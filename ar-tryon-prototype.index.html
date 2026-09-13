@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>AR着せ替え撮影 プロトタイプ</title>
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #16191d;
+    --accent: #5ec8a8;
+    --text: #eef1f0;
+    --muted: #8a9096;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+    overflow: hidden;
+  }
+  #stage {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+  video, canvas#overlay {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%) scaleX(-1); /* セルフィー鏡像表示 */
+    max-width: 100%;
+    max-height: 100%;
+  }
+  canvas#overlay {
+    pointer-events: none;
+  }
+  #topBar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 10;
+    background: linear-gradient(to bottom, rgba(0,0,0,.55), transparent);
+  }
+  #topBar .item-name {
+    font-size: 14px;
+    color: var(--muted);
+  }
+  #topBar .item-name strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  #status {
+    position: absolute;
+    top: 54px; left: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    z-index: 10;
+  }
+  #controls {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 22px 16px 28px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 24px;
+    z-index: 10;
+    background: linear-gradient(to top, rgba(0,0,0,.6), transparent);
+  }
+  #shutter {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    border: 4px solid var(--text);
+    background: transparent;
+    position: relative;
+    cursor: pointer;
+  }
+  #shutter::after {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    background: var(--text);
+  }
+  #shutter:active::after { background: var(--accent); }
+  #demoSwitcher {
+    position: absolute;
+    right: 12px;
+    bottom: 110px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 10;
+  }
+  #demoSwitcher button {
+    font-size: 11px;
+    padding: 6px 10px;
+    border-radius: 20px;
+    border: 1px solid #444;
+    background: rgba(20,22,25,.8);
+    color: var(--text);
+    cursor: pointer;
+  }
+  #demoSwitcher button.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  #preview {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.9);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    z-index: 20;
+  }
+  #preview img {
+    max-width: 90%;
+    max-height: 70vh;
+    border-radius: 8px;
+  }
+  #preview .actions { display: flex; gap: 12px; }
+  #preview button {
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #preview .save { background: var(--accent); color: #05201a; font-weight: 600; }
+  #preview .close { background: #333; color: var(--text); }
+  #permissionNotice {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    font-size: 14px;
+    color: var(--muted);
+    z-index: 15;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="overlay"></canvas>
+
+  <div id="topBar">
+    <div class="item-name">着用中: <strong id="itemLabel">-</strong></div>
+  </div>
+  <div id="status">姿勢推定を初期化中...</div>
+
+  <!-- 実運用ではQRごとにURLの ?item=xxx が変わる想定。
+       デモ用に手動切り替えボタンを用意(本番では削除してよい) -->
+  <div id="demoSwitcher"></div>
+
+  <div id="controls">
+    <button id="shutter" aria-label="撮影"></button>
+  </div>
+
+  <div id="permissionNotice" style="display:none;">
+    カメラへのアクセスを許可してください。<br />
+    ※このデモはHTTPS環境(またはlocalhost)で動作します。file:// で直接開いた場合はカメラが動作しません。
+  </div>
+</div>
+
+<div id="preview">
+  <img id="previewImg" alt="撮影結果" />
+  <div class="actions">
+    <button class="save" id="saveBtn">端末に保存</button>
+    <button class="close" id="closeBtn">閉じる</button>
+  </div>
+</div>
+
+<!-- MediaPipe Tasks Vision (Pose Landmarker) -->
+<script type="module">
+import {
+  PoseLandmarker,
+  FilesetResolver,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+/* ---------------------------------------------------------
+   1. 服アイテム定義
+   QRコードには例えば
+     https://your-domain.example/ar.html?item=seifuku_blazer
+   のようなURLを埋め込む想定。
+   type:"image" のアイテムは実際の服画像(透過PNG)を
+   drawImage() で重ねる。type:"shape" は簡易シルエットの
+   プレースホルダー(動作確認・デモ切り替え用)。
+--------------------------------------------------------- */
+const ITEMS = {
+  // 実際の制服画像を使うアイテム(肩に固定して表示するシンプル版)。
+  // anchor は画像内での「肩ライン」の位置を表す基準値で、
+  // 画像作成時に一度だけ計測しておく(単位はimg自体のpx)。
+  seifuku_blazer: {
+    label: "紺ブレザー制服(上下)",
+    type: "image",
+    src: "uniform_blazer_skirt.png",
+    anchor: {
+      imgWidth: 350,
+      imgHeight: 583,
+      shoulderCenterX: 165.5, // 画像内で両肩の中点のx座標
+      shoulderY: 86,          // 画像内で肩ラインのy座標
+      shoulderWidth: 265,     // 画像内での肩幅(px)
+    },
+    // 検出した肩幅に対して、どのくらいの倍率で服を大きく見せるか。
+    // 人体の肩関節幅よりジャケットの肩幅は外側に出るため、少し大きめにする。
+    widthMultiplier: 1.35,
+  },
+  seifuku_sailor: {
+    label: "セーラー服(上下)",
+    type: "image",
+    src: "uniform_sailor.png",
+    anchor: {
+      imgWidth: 286,
+      imgHeight: 481,
+      shoulderCenterX: 141,
+      shoulderY: 95,
+      shoulderWidth: 244,
+    },
+    widthMultiplier: 1.5,
+  },
+  seifuku_polo: {
+    label: "ポロシャツ(上下)",
+    type: "image",
+    src: "uniform_polo.png",
+    anchor: {
+      imgWidth: 350,
+      imgHeight: 703,
+      shoulderCenterX: 168.91,
+      shoulderY: 49.84,
+      shoulderWidth: 200.47,
+    },
+    widthMultiplier: 1.05,
+  },
+  tshirt_red: {
+    label: "Tシャツ(レッド・プレースホルダー)",
+    type: "shape",
+    color: "#d94f4f",
+    accent: "#a83737",
+  },
+  tshirt_blue: {
+    label: "Tシャツ(ブルー・プレースホルダー)",
+    type: "shape",
+    color: "#3f6fbf",
+    accent: "#2c5091",
+  },
+  hoodie_black: {
+    label: "パーカー(ブラック・プレースホルダー)",
+    type: "shape",
+    color: "#2b2b2e",
+    accent: "#141416",
+  },
+};
+
+// type: "image" / "rigged" のアイテムは事前に読み込んでおく
+const loadedImages = {};
+const RIGGED_PART_KEYS = ["torso", "leftUpper", "leftFore", "rightUpper", "rightFore"];
+
+Object.entries(ITEMS).forEach(([key, item]) => {
+  if (item.type === "image") {
+    const img = new Image();
+    img.src = item.src;
+    loadedImages[key] = img;
+  } else if (item.type === "rigged") {
+    RIGGED_PART_KEYS.forEach((partKey) => {
+      const img = new Image();
+      img.src = item[partKey].file;
+      loadedImages[`${key}__${partKey}`] = img;
+    });
+  }
+});
+
+const params = new URLSearchParams(location.search);
+let currentItemKey = params.get("item") && ITEMS[params.get("item")]
+  ? params.get("item")
+  : "seifuku_blazer";
+
+const itemLabelEl = document.getElementById("itemLabel");
+const demoSwitcher = document.getElementById("demoSwitcher");
+
+function renderSwitcher() {
+  demoSwitcher.innerHTML = "";
+  Object.entries(ITEMS).forEach(([key, item]) => {
+    const btn = document.createElement("button");
+    btn.textContent = item.label;
+    btn.className = key === currentItemKey ? "active" : "";
+    btn.onclick = () => {
+      currentItemKey = key;
+      renderSwitcher();
+      itemLabelEl.textContent = ITEMS[currentItemKey].label;
+    };
+    demoSwitcher.appendChild(btn);
+  });
+  itemLabelEl.textContent = ITEMS[currentItemKey].label;
+}
+renderSwitcher();
+
+/* ---------------------------------------------------------
+   2. カメラ初期化
+--------------------------------------------------------- */
+const video = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const ctx = overlay.getContext("2d");
+const statusEl = document.getElementById("status");
+const permissionNotice = document.getElementById("permissionNotice");
+
+async function setupCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 1280 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
+  } catch (err) {
+    console.error(err);
+    permissionNotice.style.display = "flex";
+    statusEl.textContent = "カメラを起動できませんでした";
+    throw err;
+  }
+}
+
+/* ---------------------------------------------------------
+   3. Pose Landmarker 初期化
+--------------------------------------------------------- */
+let poseLandmarker;
+
+async function setupPose() {
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+  });
+}
+
+/* ---------------------------------------------------------
+   4. 服オーバーレイ描画
+   共通の姿勢ジオメトリ(肩の中心・角度・肩幅)を計算したうえで、
+   アイテムの type に応じて画像描画 or シルエット描画に振り分ける。
+--------------------------------------------------------- */
+function drawClothing(ctxTarget, landmarks, w, h) {
+  const ls = landmarks[11]; // 被写体本人から見た左肩
+  const rs = landmarks[12]; // 被写体本人から見た右肩
+  const lh = landmarks[23]; // 被写体本人から見た左腰
+  const rh = landmarks[24]; // 被写体本人から見た右腰
+  if (!ls || !rs || !lh || !rh) return;
+
+  const shoulder11 = { x: ls.x * w, y: ls.y * h };
+  const shoulder12 = { x: rs.x * w, y: rs.y * h };
+  const hip23 = { x: lh.x * w, y: lh.y * h };
+  const hip24 = { x: rh.x * w, y: rh.y * h };
+
+  // MediaPipeの11/12番は「被写体本人から見た」左右のため、
+  // カメラに正対している場合は画像上ではこれが逆(向かって右に本人の左肩)になる。
+  // 回転角は画像座標上の左右で揃えないと、服が180度近く反転してしまう。
+  const imgLeftShoulder = shoulder11.x < shoulder12.x ? shoulder11 : shoulder12;
+  const imgRightShoulder = shoulder11.x < shoulder12.x ? shoulder12 : shoulder11;
+
+  const centerX = (imgLeftShoulder.x + imgRightShoulder.x) / 2;
+  const centerY = (imgLeftShoulder.y + imgRightShoulder.y) / 2;
+  const shoulderWidthPx = Math.hypot(
+    imgRightShoulder.x - imgLeftShoulder.x,
+    imgRightShoulder.y - imgLeftShoulder.y
+  );
+  const hipCenterX = (hip23.x + hip24.x) / 2;
+  const hipCenterY = (hip23.y + hip24.y) / 2;
+  const torsoHeight = Math.hypot(
+    hipCenterY - centerY,
+    hipCenterX - centerX
+  );
+  const angle = Math.atan2(
+    imgRightShoulder.y - imgLeftShoulder.y,
+    imgRightShoulder.x - imgLeftShoulder.x
+  );
+
+  const item = ITEMS[currentItemKey];
+  if (!item) return;
+
+  if (item.type === "rigged") {
+    const leftIsImageLeft = shoulder11.x < shoulder12.x;
+    drawClothingRigged(
+      ctxTarget, currentItemKey, item, landmarks, w, h,
+      centerX, centerY, angle, shoulderWidthPx, leftIsImageLeft
+    );
+  } else if (item.type === "image") {
+    drawClothingImage(ctxTarget, currentItemKey, item, centerX, centerY, angle, shoulderWidthPx);
+  } else {
+    drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWidthPx, torsoHeight);
+  }
+}
+
+/* ---------------------------------------------------------
+   4a-2. 肩・肘の動きに追従する多パーツ画像描画
+   胴体は肩ラインに固定、上腕は肩関節を軸に、前腕は肘関節を軸に
+   それぞれ独立して回転させる(手首側の位置は前腕の見た目の
+   向きの計算にのみ使用し、描画の基準点は使わない)。
+--------------------------------------------------------- */
+function rotateVec(dx, dy, ang) {
+  const cos = Math.cos(ang), sin = Math.sin(ang);
+  return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+}
+
+function drawClothingRigged(
+  ctxTarget, itemKey, item, landmarks, w, h,
+  centerX, centerY, torsoAngle, shoulderWidthPx, leftIsImageLeft
+) {
+  const torsoImg = loadedImages[`${itemKey}__torso`];
+  if (!torsoImg || !torsoImg.complete || torsoImg.naturalWidth === 0) return;
+
+  const multiplier = item.widthMultiplier || 1.0;
+  const scale = (shoulderWidthPx / item.torso.shoulderWidth) * multiplier;
+
+  // --- 胴体(肩ラインに固定、追加回転なし) ---
+  ctxTarget.save();
+  ctxTarget.translate(centerX, centerY);
+  ctxTarget.rotate(torsoAngle);
+  ctxTarget.drawImage(
+    torsoImg,
+    -item.torso.shoulderCenterX * scale,
+    -item.torso.shoulderY * scale,
+    torsoImg.naturalWidth * scale,
+    torsoImg.naturalHeight * scale
+  );
+  ctxTarget.restore();
+
+  // --- 腕(肩・肘それぞれを軸に回転) ---
+  // ランドマーク: 11/13/15=本人の左肩/左肘/左手首, 12/14/16=右肩/右肘/右手首
+  const chains = leftIsImageLeft
+    ? { left: [11, 13, 15], right: [12, 14, 16] }
+    : { left: [12, 14, 16], right: [11, 13, 15] };
+
+  drawArmChain(ctxTarget, torsoImg, centerX, centerY, torsoAngle, scale, landmarks, w, h,
+    chains.left, item.leftUpper, item.leftFore, itemKey, "left");
+  drawArmChain(ctxTarget, torsoImg, centerX, centerY, torsoAngle, scale, landmarks, w, h,
+    chains.right, item.rightUpper, item.rightFore, itemKey, "right");
+}
+
+function drawArmChain(
+  ctxTarget, torsoImgUnused, centerX, centerY, torsoAngle, scale,
+  landmarks, w, h, [shoulderIdx, elbowIdx, wristIdx], upperDef, foreDef, itemKey, side
+) {
+  const shoulderLm = landmarks[shoulderIdx];
+  const elbowLm = landmarks[elbowIdx];
+  const wristLm = landmarks[wristIdx];
+  if (!shoulderLm || !elbowLm || !wristLm) return;
+
+  const shoulderPt = { x: shoulderLm.x * w, y: shoulderLm.y * h };
+  const elbowPt = { x: elbowLm.x * w, y: elbowLm.y * h };
+  const wristPt = { x: wristLm.x * w, y: wristLm.y * h };
+
+  // 全身の傾き(torsoAngle)を打ち消した「胴体基準のローカル座標」に変換する。
+  // これにより、元の制服写真と同じ座標系で角度を比較できる。
+  const localShoulder = rotateVec(shoulderPt.x - centerX, shoulderPt.y - centerY, -torsoAngle);
+  const localElbow = rotateVec(elbowPt.x - centerX, elbowPt.y - centerY, -torsoAngle);
+  const localWrist = rotateVec(wristPt.x - centerX, wristPt.y - centerY, -torsoAngle);
+
+  const currentUpperAngle = Math.atan2(localElbow.y - localShoulder.y, localElbow.x - localShoulder.x);
+  const currentForeAngle = Math.atan2(localWrist.y - localElbow.y, localWrist.x - localElbow.x);
+
+  const upperImg = loadedImages[`${itemKey}__${side}Upper`];
+  const foreImg = loadedImages[`${itemKey}__${side}Fore`];
+
+  // --- 上腕(肩を軸に回転) ---
+  if (upperImg && upperImg.complete && upperImg.naturalWidth > 0) {
+    const deltaUpper = currentUpperAngle - upperDef.refAngle;
+    ctxTarget.save();
+    ctxTarget.translate(centerX, centerY);
+    ctxTarget.rotate(torsoAngle);
+    ctxTarget.translate(localShoulder.x * scale, localShoulder.y * scale);
+    ctxTarget.rotate(deltaUpper);
+    ctxTarget.drawImage(
+      upperImg,
+      -upperDef.pivotX * scale,
+      -upperDef.pivotY * scale,
+      upperImg.naturalWidth * scale,
+      upperImg.naturalHeight * scale
+    );
+    ctxTarget.restore();
+  }
+
+  // --- 前腕(肘を軸に回転) ---
+  if (foreImg && foreImg.complete && foreImg.naturalWidth > 0) {
+    const deltaFore = currentForeAngle - foreDef.refAngle;
+    ctxTarget.save();
+    ctxTarget.translate(centerX, centerY);
+    ctxTarget.rotate(torsoAngle);
+    ctxTarget.translate(localElbow.x * scale, localElbow.y * scale);
+    ctxTarget.rotate(deltaFore);
+    ctxTarget.drawImage(
+      foreImg,
+      -foreDef.pivotX * scale,
+      -foreDef.pivotY * scale,
+      foreImg.naturalWidth * scale,
+      foreImg.naturalHeight * scale
+    );
+    ctxTarget.restore();
+  }
+}
+
+/* ---------------------------------------------------------
+   4a. 実画像を使った服オーバーレイ描画
+   anchor(画像内の肩幅・肩の中心・肩ラインY)を基準に、
+   検出した肩幅に合わせて画像をスケーリング・回転して重ねる。
+--------------------------------------------------------- */
+function drawClothingImage(ctxTarget, itemKey, item, centerX, centerY, angle, shoulderWidthPx) {
+  const img = loadedImages[itemKey];
+  if (!img || !img.complete || img.naturalWidth === 0) return; // 読み込み待ち
+
+  const anchor = item.anchor;
+  const multiplier = item.widthMultiplier || 1.0;
+  const scale = (shoulderWidthPx / anchor.shoulderWidth) * multiplier;
+
+  const drawW = anchor.imgWidth * scale;
+  const drawH = anchor.imgHeight * scale;
+  const offsetX = -anchor.shoulderCenterX * scale;
+  const offsetY = -anchor.shoulderY * scale;
+
+  ctxTarget.save();
+  ctxTarget.translate(centerX, centerY);
+  ctxTarget.rotate(angle);
+  ctxTarget.drawImage(img, offsetX, offsetY, drawW, drawH);
+  ctxTarget.restore();
+}
+
+/* ---------------------------------------------------------
+   4b. プレースホルダー(簡易シルエット)描画
+--------------------------------------------------------- */
+function drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWidth, torsoHeight) {
+  const bodyWidth = shoulderWidth * 1.9;
+  const bodyHeight = torsoHeight * 1.25;
+
+  ctxTarget.save();
+  ctxTarget.translate(centerX, centerY);
+  ctxTarget.rotate(angle);
+
+  // 胴体(簡易シャツシルエット)
+  ctxTarget.fillStyle = item.color;
+  ctxTarget.beginPath();
+  ctxTarget.moveTo(-bodyWidth / 2, -bodyHeight * 0.15);
+  ctxTarget.quadraticCurveTo(-bodyWidth / 2, bodyHeight * 0.75, -bodyWidth * 0.35, bodyHeight * 0.85);
+  ctxTarget.lineTo(bodyWidth * 0.35, bodyHeight * 0.85);
+  ctxTarget.quadraticCurveTo(bodyWidth / 2, bodyHeight * 0.75, bodyWidth / 2, -bodyHeight * 0.15);
+  ctxTarget.quadraticCurveTo(bodyWidth * 0.3, -bodyHeight * 0.35, 0, -bodyHeight * 0.28);
+  ctxTarget.quadraticCurveTo(-bodyWidth * 0.3, -bodyHeight * 0.35, -bodyWidth / 2, -bodyHeight * 0.15);
+  ctxTarget.closePath();
+  ctxTarget.fill();
+
+  // 襟(アクセント)
+  ctxTarget.fillStyle = item.accent;
+  ctxTarget.beginPath();
+  ctxTarget.ellipse(0, -bodyHeight * 0.22, bodyWidth * 0.14, bodyHeight * 0.08, 0, 0, Math.PI * 2);
+  ctxTarget.fill();
+
+  ctxTarget.restore();
+}
+
+/* ---------------------------------------------------------
+   5. メインループ
+--------------------------------------------------------- */
+let lastVideoTime = -1;
+
+function renderLoop() {
+  if (video.readyState >= 2 && poseLandmarker) {
+    const nowMs = performance.now();
+    if (video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      const result = poseLandmarker.detectForVideo(video, nowMs);
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      if (result.landmarks && result.landmarks.length > 0) {
+        drawClothing(ctx, result.landmarks[0], overlay.width, overlay.height);
+        statusEl.textContent = "";
+      } else {
+        statusEl.textContent = "人物を検出中...";
+      }
+    }
+  }
+  requestAnimationFrame(renderLoop);
+}
+
+/* ---------------------------------------------------------
+   6. 撮影処理
+   video(鏡像)+ overlay(服)を1枚に合成する。
+--------------------------------------------------------- */
+const shutterBtn = document.getElementById("shutter");
+const previewEl = document.getElementById("preview");
+const previewImg = document.getElementById("previewImg");
+const saveBtn = document.getElementById("saveBtn");
+const closeBtn = document.getElementById("closeBtn");
+
+shutterBtn.addEventListener("click", () => {
+  const captureCanvas = document.createElement("canvas");
+  captureCanvas.width = overlay.width;
+  captureCanvas.height = overlay.height;
+  const cctx = captureCanvas.getContext("2d");
+
+  // 鏡像のまま撮影(プレビュー表示と同じ見た目にする)
+  cctx.translate(captureCanvas.width, 0);
+  cctx.scale(-1, 1);
+  cctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+  cctx.drawImage(overlay, 0, 0);
+
+  const dataUrl = captureCanvas.toDataURL("image/png");
+  previewImg.src = dataUrl;
+  previewEl.style.display = "flex";
+});
+
+saveBtn.addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = previewImg.src;
+  a.download = `ar-tryon-${currentItemKey}-${Date.now()}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+closeBtn.addEventListener("click", () => {
+  previewEl.style.display = "none";
+});
+
+/* ---------------------------------------------------------
+   7. 起動
+--------------------------------------------------------- */
+(async function init() {
+  try {
+    await setupCamera();
+    statusEl.textContent = "姿勢推定モデルを読み込み中...";
+    await setupPose();
+    statusEl.textContent = "";
+    renderLoop();
+  } catch (e) {
+    console.error("初期化失敗:", e);
+  }
+})();
+</script>
+</body>
+</html>
