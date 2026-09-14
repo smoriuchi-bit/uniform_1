@@ -33,7 +33,7 @@
   video, canvas#overlay {
     position: absolute;
     top: 50%; left: 50%;
-    transform: translate(-50%, -50%) scaleX(-1); /* セルフィー鏡像表示 */
+    transform: translate(-50%, -50%); /* 背面カメラのため鏡像にしない */
     max-width: 100%;
     max-height: 100%;
   }
@@ -153,6 +153,23 @@
     color: var(--muted);
     z-index: 15;
   }
+  #landscapeNotice {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--text);
+    background: rgba(5, 6, 8, 0.97);
+    z-index: 40;
+  }
+  #landscapeNotice.show {
+    display: flex;
+  }
 </style>
 </head>
 <body>
@@ -178,6 +195,10 @@
     カメラへのアクセスを許可してください。<br />
     ※このデモはHTTPS環境(またはlocalhost)で動作します。file:// で直接開いた場合はカメラが動作しません。
   </div>
+</div>
+
+<div id="landscapeNotice">
+  📱 スマホを縦向きにしてご利用ください
 </div>
 
 <div id="preview">
@@ -324,7 +345,11 @@ const permissionNotice = document.getElementById("permissionNotice");
 async function setupCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 1280 } },
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 720 },
+        height: { ideal: 1280 },
+      },
       audio: false,
     });
     video.srcObject = stream;
@@ -605,7 +630,7 @@ function renderLoop() {
 
 /* ---------------------------------------------------------
    6. 撮影処理
-   video(鏡像)+ overlay(服)を1枚に合成する。
+   video + overlay(服)を1枚に合成する(背面カメラのため鏡像にしない)。
 --------------------------------------------------------- */
 const shutterBtn = document.getElementById("shutter");
 const previewEl = document.getElementById("preview");
@@ -619,9 +644,6 @@ shutterBtn.addEventListener("click", () => {
   captureCanvas.height = overlay.height;
   const cctx = captureCanvas.getContext("2d");
 
-  // 鏡像のまま撮影(プレビュー表示と同じ見た目にする)
-  cctx.translate(captureCanvas.width, 0);
-  cctx.scale(-1, 1);
   cctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
   cctx.drawImage(overlay, 0, 0);
 
@@ -644,10 +666,37 @@ closeBtn.addEventListener("click", () => {
 });
 
 /* ---------------------------------------------------------
-   7. 起動
+   7. 画面の向き
+   ブラウザの制約上、確実な縦向き固定はできない(特にiOS Safariは
+   screen.orientation.lock 自体が未対応)。そのため:
+   - Android Chrome等で使える場合はベストエフォートでロックを試みる
+   - どのブラウザでも、横向きになったら警告を表示して気づかせる
+   の二段構えにしている。
+--------------------------------------------------------- */
+const landscapeNotice = document.getElementById("landscapeNotice");
+
+function updateOrientationNotice() {
+  const isLandscape = window.matchMedia("(orientation: landscape)").matches;
+  landscapeNotice.classList.toggle("show", isLandscape);
+}
+window.addEventListener("resize", updateOrientationNotice);
+window.addEventListener("orientationchange", updateOrientationNotice);
+updateOrientationNotice();
+
+function tryLockPortrait() {
+  if (screen.orientation && screen.orientation.lock) {
+    // 対応ブラウザでも、フルスクリーンでない場合は失敗することが多いため
+    // エラーは黙って無視する(横向き警告が保険として機能する)。
+    screen.orientation.lock("portrait").catch(() => {});
+  }
+}
+
+/* ---------------------------------------------------------
+   8. 起動
 --------------------------------------------------------- */
 (async function init() {
   try {
+    tryLockPortrait();
     await setupCamera();
     statusEl.textContent = "姿勢推定モデルを読み込み中...";
     await setupPose();
