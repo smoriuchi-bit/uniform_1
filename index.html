@@ -353,7 +353,7 @@ const permissionNotice = document.getElementById("permissionNotice");
 // 横長のフレームを返すことがあるため。
 let needsRotation = false;
 // 回転方向が逆(映像が上下逆・横倒しになる)場合は、この値を -1 にしてください。
-const ROTATE_DIRECTION = 1;
+const ROTATE_DIRECTION = -1;
 
 async function setupCamera() {
   try {
