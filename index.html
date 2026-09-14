@@ -357,20 +357,52 @@ const ROTATE_DIRECTION = 1;
 
 async function setupCamera() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 720 },
-        height: { ideal: 1280 },
+    // aspectRatio(縦長 9:16)を明示的に指定することで、
+    // 対応端末ではブラウザが最初から縦長のストリームを
+    // 返してくれる可能性が高くなる(width/heightのideal指定だけより
+    // 向きの指定として効きやすい)。
+    const constraintsList = [
+      {
+        video: {
+          facingMode: { ideal: "environment" },
+          aspectRatio: { ideal: 9 / 16 },
+          width: { ideal: 1080 },
+          height: { ideal: 1920 },
+        },
+        audio: false,
       },
-      audio: false,
-    });
+      // 上記で失敗した場合のフォールバック(向き指定なし)
+      {
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 720 },
+          height: { ideal: 1280 },
+        },
+        audio: false,
+      },
+    ];
+
+    let stream = null;
+    let lastErr = null;
+    for (const constraints of constraintsList) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!stream) throw lastErr;
+
     video.srcObject = stream;
     await video.play();
 
     const rawW = video.videoWidth;
     const rawH = video.videoHeight;
-    needsRotation = rawW > rawH; // 横長で来ていたら回転が必要
+    // aspectRatio指定が効いていれば、この時点でrawH > rawW(縦長)になっており
+    // needsRotationはfalseのまま=回転処理は一切行われない。
+    // 効かなかった端末でのみ、保険として回転補正が自動的に有効になる。
+    needsRotation = rawW > rawH;
 
     overlay.width = needsRotation ? rawH : rawW;
     overlay.height = needsRotation ? rawW : rawH;
