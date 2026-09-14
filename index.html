@@ -30,14 +30,19 @@
     justify-content: center;
     background: #000;
   }
-  video, canvas#overlay {
+  video {
     position: absolute;
     top: 50%; left: 50%;
-    transform: translate(-50%, -50%); /* 背面カメラのため鏡像にしない */
-    max-width: 100%;
-    max-height: 100%;
+    transform: translate(-50%, -50%);
+    opacity: 0; /* カメラ映像はcanvasに描画するので、videoタグ自体は非表示 */
+    pointer-events: none;
   }
   canvas#overlay {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 100%;
+    max-height: 100%;
     pointer-events: none;
   }
   #topBar {
@@ -342,6 +347,14 @@ const ctx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
+// 映像データが横長(センサーの向きそのまま)で渡ってきた場合、
+// Canvas描画時に90度回転させて縦長に補正する。
+// 一部のAndroid端末では、スマホを縦に持っていてもgetUserMediaが
+// 横長のフレームを返すことがあるため。
+let needsRotation = false;
+// 回転方向が逆(映像が上下逆・横倒しになる)場合は、この値を -1 にしてください。
+const ROTATE_DIRECTION = 1;
+
 async function setupCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -354,8 +367,13 @@ async function setupCamera() {
     });
     video.srcObject = stream;
     await video.play();
-    overlay.width = video.videoWidth;
-    overlay.height = video.videoHeight;
+
+    const rawW = video.videoWidth;
+    const rawH = video.videoHeight;
+    needsRotation = rawW > rawH; // 横長で来ていたら回転が必要
+
+    overlay.width = needsRotation ? rawH : rawW;
+    overlay.height = needsRotation ? rawW : rawH;
   } catch (err) {
     console.error(err);
     permissionNotice.style.display = "flex";
@@ -607,6 +625,9 @@ function drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWid
 
 /* ---------------------------------------------------------
    5. メインループ
+   カメラ映像自体をこのCanvasに毎フレーム描画し(必要なら回転補正)、
+   その上に服を重ね描きする。videoタグ自体は非表示(opacity:0)で、
+   単なる映像ソースとしてのみ使う。
 --------------------------------------------------------- */
 let lastVideoTime = -1;
 
@@ -616,13 +637,28 @@ function renderLoop() {
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
       const result = poseLandmarker.detectForVideo(video, nowMs);
+
+      const rawW = video.videoWidth;
+      const rawH = video.videoHeight;
+
       ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.save();
+      if (needsRotation) {
+        ctx.translate(overlay.width / 2, overlay.height / 2);
+        ctx.rotate(ROTATE_DIRECTION * (Math.PI / 2));
+        ctx.translate(-rawW / 2, -rawH / 2);
+      }
+      ctx.drawImage(video, 0, 0, rawW, rawH);
+
       if (result.landmarks && result.landmarks.length > 0) {
-        drawClothing(ctx, result.landmarks[0], overlay.width, overlay.height);
+        // ランドマークは常に「回転前の生の映像」基準の正規化座標なので、
+        // w/hにはrawW/rawHを渡す(回転はこのctxの変換に既に含まれている)。
+        drawClothing(ctx, result.landmarks[0], rawW, rawH);
         statusEl.textContent = "";
       } else {
         statusEl.textContent = "人物を検出中...";
       }
+      ctx.restore();
     }
   }
   requestAnimationFrame(renderLoop);
@@ -630,7 +666,8 @@ function renderLoop() {
 
 /* ---------------------------------------------------------
    6. 撮影処理
-   video + overlay(服)を1枚に合成する(背面カメラのため鏡像にしない)。
+   overlay Canvasには毎フレーム「カメラ映像(回転補正済み)+服」が
+   合成描画されているので、そのまま複製するだけでよい。
 --------------------------------------------------------- */
 const shutterBtn = document.getElementById("shutter");
 const previewEl = document.getElementById("preview");
@@ -644,7 +681,6 @@ shutterBtn.addEventListener("click", () => {
   captureCanvas.height = overlay.height;
   const cctx = captureCanvas.getContext("2d");
 
-  cctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
   cctx.drawImage(overlay, 0, 0);
 
   const dataUrl = captureCanvas.toDataURL("image/png");
