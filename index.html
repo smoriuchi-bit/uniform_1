@@ -129,9 +129,41 @@
     max-width: 48%;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none; /* Firefox */
+    opacity: 1;
+    transform: translateX(0);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+  }
+  #demoSwitcher.collapsed {
+    opacity: 0;
+    transform: translateX(16px);
+    pointer-events: none;
   }
   #demoSwitcher::-webkit-scrollbar {
     display: none; /* Chrome/Safari */
+  }
+  #switcherToggle {
+    position: absolute;
+    right: 12px;
+    top: 90px;
+    z-index: 10;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid #444;
+    background: rgba(20,22,25,.8);
+    color: var(--text);
+    font-size: 18px;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #switcherToggle.show {
+    opacity: 1;
+    pointer-events: auto;
   }
   #demoSwitcher button {
     font-size: 11px;
@@ -219,8 +251,10 @@
   <div id="status">姿勢推定を初期化中...</div>
 
   <!-- 実運用ではQRごとにURLの ?item=xxx が変わる想定。
-       デモ用に手動切り替えボタンを用意(本番では削除してよい) -->
+       デモ用に手動切り替えボタンを用意(本番では削除してよい)。
+       撮影の邪魔にならないよう、5秒操作がないと自動でたたまれる。 -->
   <div id="demoSwitcher"></div>
+  <button id="switcherToggle" aria-label="服の一覧を表示">👕</button>
 
   <div id="controls">
     <button id="shutter" aria-label="撮影"></button>
@@ -350,6 +384,7 @@ let currentItemKey = params.get("item") && ITEMS[params.get("item")]
 
 const itemLabelEl = document.getElementById("itemLabel");
 const demoSwitcher = document.getElementById("demoSwitcher");
+const switcherToggle = document.getElementById("switcherToggle");
 
 function renderSwitcher() {
   demoSwitcher.innerHTML = "";
@@ -361,12 +396,40 @@ function renderSwitcher() {
       currentItemKey = key;
       renderSwitcher();
       itemLabelEl.textContent = ITEMS[currentItemKey].label;
+      restartSwitcherCollapseTimer();
     };
     demoSwitcher.appendChild(btn);
   });
   itemLabelEl.textContent = ITEMS[currentItemKey].label;
 }
 renderSwitcher();
+
+/* ---------------------------------------------------------
+   1b. 服切り替え一覧の自動折りたたみ
+   撮影の邪魔にならないよう、5秒操作がないと自動的にたたまれ、
+   小さいアイコンボタンだけが残る。アイコンをタップすると再度開く。
+--------------------------------------------------------- */
+const SWITCHER_COLLAPSE_DELAY_MS = 5000;
+let switcherCollapseTimer = null;
+
+function collapseSwitcher() {
+  demoSwitcher.classList.add("collapsed");
+  switcherToggle.classList.add("show");
+}
+
+function expandSwitcher() {
+  demoSwitcher.classList.remove("collapsed");
+  switcherToggle.classList.remove("show");
+  restartSwitcherCollapseTimer();
+}
+
+function restartSwitcherCollapseTimer() {
+  clearTimeout(switcherCollapseTimer);
+  switcherCollapseTimer = setTimeout(collapseSwitcher, SWITCHER_COLLAPSE_DELAY_MS);
+}
+
+switcherToggle.addEventListener("click", expandSwitcher);
+restartSwitcherCollapseTimer();
 
 /* ---------------------------------------------------------
    2. カメラ初期化
@@ -378,21 +441,17 @@ const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
 // 映像の向きを 0°/90°/180°/270° の4段階で補正できるようにする。
-// 端末やブラウザによって必要な回転量・向きが異なり、こちらの環境では
-// 実機確認ができないため、画面右上の「回転」ボタンでその場で
-// 正しい向きを探せるようにしてある。
+// 毎回カメラの実際の映像サイズ(横長か縦長か)を見て自動判定するため、
+// 基本的には何もタップしなくても常に縦長で表示される。
 // 0=回転なし, 1=時計回りに90°, 2=180°, 3=反時計回りに90°(=時計回り270°)
 let rotationSteps = 0;
-const ROTATION_STORAGE_KEY = "ar-tryon-rotation-steps";
 
 function getInitialRotationSteps(rawW, rawH) {
-  // URLで ?rot=1 のように指定されていれば最優先で使う(本番運用向け)
+  // URLで ?rot=1 のように明示的に指定されていれば、自動判定より優先する
+  // (auto判定では区別できない180°ズレ等、特殊なケースの救済用)
   const urlRot = new URLSearchParams(location.search).get("rot");
   if (urlRot !== null && /^[0-3]$/.test(urlRot)) return parseInt(urlRot, 10);
-  // 次に、前回このボタンで調整して保存された値があればそれを使う
-  const saved = localStorage.getItem(ROTATION_STORAGE_KEY);
-  if (saved !== null && /^[0-3]$/.test(saved)) return parseInt(saved, 10);
-  // どちらもなければ、横長で来ている場合のみ90°回転を初期値にする
+  // 横長の映像で来ている場合のみ90°回転し、常に縦長で表示する
   return rawW > rawH ? 1 : 0;
 }
 
@@ -456,13 +515,13 @@ async function setupCamera() {
   }
 }
 
-// 回転調整ボタン:タップするたびに90°ずつ切り替え、正しい向きになったら
-// そのままにしておけば次回以降(同じ端末・ブラウザなら)記憶される。
+// 回転調整ボタン:通常は自動判定で正しい向きになるはずだが、
+// 万一ズレる端末があった場合の、その場限りの緊急上書き用
+// (保存はしない。次回アクセス時は必ず自動判定からやり直す)。
 const rotateBtn = document.getElementById("rotateBtn");
 rotateBtn.addEventListener("click", () => {
   rotationSteps = (rotationSteps + 1) % 4;
   applyCanvasSizeForRotation();
-  localStorage.setItem(ROTATION_STORAGE_KEY, String(rotationSteps));
 });
 
 /* ---------------------------------------------------------
