@@ -71,6 +71,16 @@
     color: var(--text);
     font-weight: 600;
   }
+  #rotateBtn {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 20px;
+    border: 1px solid #444;
+    background: rgba(20,22,25,.8);
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
   #status {
     position: absolute;
     top: 54px; left: 16px;
@@ -202,6 +212,9 @@
 
   <div id="topBar">
     <div class="item-name">着用中: <strong id="itemLabel">-</strong></div>
+    <!-- 向きがおかしい場合、タップするたびに90°ずつ回転を切り替えて
+         その場で正しい向きを探せる(実機確認用。本番では削除可)。 -->
+    <button id="rotateBtn" aria-label="映像の向きを調整">🔄 回転調整</button>
   </div>
   <div id="status">姿勢推定を初期化中...</div>
 
@@ -364,13 +377,32 @@ const ctx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
-// 映像データが横長(センサーの向きそのまま)で渡ってきた場合、
-// Canvas描画時に90度回転させて縦長に補正する。
-// 一部のAndroid端末では、スマホを縦に持っていてもgetUserMediaが
-// 横長のフレームを返すことがあるため。
-let needsRotation = false;
-// 回転方向が逆(映像が上下逆・横倒しになる)場合は、この値を -1 にしてください。
-const ROTATE_DIRECTION = 1;
+// 映像の向きを 0°/90°/180°/270° の4段階で補正できるようにする。
+// 端末やブラウザによって必要な回転量・向きが異なり、こちらの環境では
+// 実機確認ができないため、画面右上の「回転」ボタンでその場で
+// 正しい向きを探せるようにしてある。
+// 0=回転なし, 1=時計回りに90°, 2=180°, 3=反時計回りに90°(=時計回り270°)
+let rotationSteps = 0;
+const ROTATION_STORAGE_KEY = "ar-tryon-rotation-steps";
+
+function getInitialRotationSteps(rawW, rawH) {
+  // URLで ?rot=1 のように指定されていれば最優先で使う(本番運用向け)
+  const urlRot = new URLSearchParams(location.search).get("rot");
+  if (urlRot !== null && /^[0-3]$/.test(urlRot)) return parseInt(urlRot, 10);
+  // 次に、前回このボタンで調整して保存された値があればそれを使う
+  const saved = localStorage.getItem(ROTATION_STORAGE_KEY);
+  if (saved !== null && /^[0-3]$/.test(saved)) return parseInt(saved, 10);
+  // どちらもなければ、横長で来ている場合のみ90°回転を初期値にする
+  return rawW > rawH ? 1 : 0;
+}
+
+function applyCanvasSizeForRotation() {
+  const rawW = video.videoWidth;
+  const rawH = video.videoHeight;
+  const swapped = rotationSteps % 2 === 1;
+  overlay.width = swapped ? rawH : rawW;
+  overlay.height = swapped ? rawW : rawH;
+}
 
 async function setupCamera() {
   try {
@@ -414,15 +446,8 @@ async function setupCamera() {
     video.srcObject = stream;
     await video.play();
 
-    const rawW = video.videoWidth;
-    const rawH = video.videoHeight;
-    // aspectRatio指定が効いていれば、この時点でrawH > rawW(縦長)になっており
-    // needsRotationはfalseのまま=回転処理は一切行われない。
-    // 効かなかった端末でのみ、保険として回転補正が自動的に有効になる。
-    needsRotation = rawW > rawH;
-
-    overlay.width = needsRotation ? rawH : rawW;
-    overlay.height = needsRotation ? rawW : rawH;
+    rotationSteps = getInitialRotationSteps(video.videoWidth, video.videoHeight);
+    applyCanvasSizeForRotation();
   } catch (err) {
     console.error(err);
     permissionNotice.style.display = "flex";
@@ -430,6 +455,15 @@ async function setupCamera() {
     throw err;
   }
 }
+
+// 回転調整ボタン:タップするたびに90°ずつ切り替え、正しい向きになったら
+// そのままにしておけば次回以降(同じ端末・ブラウザなら)記憶される。
+const rotateBtn = document.getElementById("rotateBtn");
+rotateBtn.addEventListener("click", () => {
+  rotationSteps = (rotationSteps + 1) % 4;
+  applyCanvasSizeForRotation();
+  localStorage.setItem(ROTATION_STORAGE_KEY, String(rotationSteps));
+});
 
 /* ---------------------------------------------------------
    3. Pose Landmarker 初期化
@@ -692,9 +726,9 @@ function renderLoop() {
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
       ctx.save();
-      if (needsRotation) {
+      if (rotationSteps !== 0) {
         ctx.translate(overlay.width / 2, overlay.height / 2);
-        ctx.rotate(ROTATE_DIRECTION * (Math.PI / 2));
+        ctx.rotate(rotationSteps * (Math.PI / 2)); // 時計回りにステップ数×90°
         ctx.translate(-rawW / 2, -rawH / 2);
       }
       ctx.drawImage(video, 0, 0, rawW, rawH);
