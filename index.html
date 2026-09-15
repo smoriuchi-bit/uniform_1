@@ -71,16 +71,6 @@
     color: var(--text);
     font-weight: 600;
   }
-  #rotateBtn {
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: 20px;
-    border: 1px solid #444;
-    background: rgba(20,22,25,.8);
-    color: var(--text);
-    cursor: pointer;
-    white-space: nowrap;
-  }
   #status {
     position: absolute;
     top: 54px; left: 16px;
@@ -244,9 +234,6 @@
 
   <div id="topBar">
     <div class="item-name">着用中: <strong id="itemLabel">-</strong></div>
-    <!-- 向きがおかしい場合、タップするたびに90°ずつ回転を切り替えて
-         その場で正しい向きを探せる(実機確認用。本番では削除可)。 -->
-    <button id="rotateBtn" aria-label="映像の向きを調整">🔄 回転調整</button>
   </div>
   <div id="status">姿勢推定を初期化中...</div>
 
@@ -440,73 +427,24 @@ const ctx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
-// 映像の向きを 0°/90°/180°/270° の4段階で補正できるようにする。
-// 毎回カメラの実際の映像サイズ(横長か縦長か)を見て自動判定するため、
-// 基本的には何もタップしなくても常に縦長で表示される。
-// 0=回転なし, 1=時計回りに90°, 2=180°, 3=反時計回りに90°(=時計回り270°)
-let rotationSteps = 0;
-
-function getInitialRotationSteps(rawW, rawH) {
-  // URLで ?rot=1 のように明示的に指定されていれば、自動判定より優先する
-  // (auto判定では区別できない180°ズレ等、特殊なケースの救済用)
-  const urlRot = new URLSearchParams(location.search).get("rot");
-  if (urlRot !== null && /^[0-3]$/.test(urlRot)) return parseInt(urlRot, 10);
-  // 横長の映像で来ている場合のみ90°回転し、常に縦長で表示する
-  return rawW > rawH ? 1 : 0;
-}
-
-function applyCanvasSizeForRotation() {
-  const rawW = video.videoWidth;
-  const rawH = video.videoHeight;
-  const swapped = rotationSteps % 2 === 1;
-  overlay.width = swapped ? rawH : rawW;
-  overlay.height = swapped ? rawW : rawH;
-}
-
 async function setupCamera() {
   try {
-    // aspectRatio(縦長 9:16)を明示的に指定することで、
-    // 対応端末ではブラウザが最初から縦長のストリームを
-    // 返してくれる可能性が高くなる(width/heightのideal指定だけより
-    // 向きの指定として効きやすい)。
-    const constraintsList = [
-      {
-        video: {
-          facingMode: { ideal: "environment" },
-          aspectRatio: { ideal: 9 / 16 },
-          width: { ideal: 1080 },
-          height: { ideal: 1920 },
-        },
-        audio: false,
+    // スマホは縦持ち前提。回転などの補正は一切行わず、
+    // カメラから来た映像をそのままの向き・サイズで表示する。
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1080 },
+        height: { ideal: 1920 },
       },
-      // 上記で失敗した場合のフォールバック(向き指定なし)
-      {
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 720 },
-          height: { ideal: 1280 },
-        },
-        audio: false,
-      },
-    ];
-
-    let stream = null;
-    let lastErr = null;
-    for (const constraints of constraintsList) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        break;
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    if (!stream) throw lastErr;
+      audio: false,
+    });
 
     video.srcObject = stream;
     await video.play();
 
-    rotationSteps = getInitialRotationSteps(video.videoWidth, video.videoHeight);
-    applyCanvasSizeForRotation();
+    overlay.width = video.videoWidth;
+    overlay.height = video.videoHeight;
   } catch (err) {
     console.error(err);
     permissionNotice.style.display = "flex";
@@ -514,15 +452,6 @@ async function setupCamera() {
     throw err;
   }
 }
-
-// 回転調整ボタン:通常は自動判定で正しい向きになるはずだが、
-// 万一ズレる端末があった場合の、その場限りの緊急上書き用
-// (保存はしない。次回アクセス時は必ず自動判定からやり直す)。
-const rotateBtn = document.getElementById("rotateBtn");
-rotateBtn.addEventListener("click", () => {
-  rotationSteps = (rotationSteps + 1) % 4;
-  applyCanvasSizeForRotation();
-});
 
 /* ---------------------------------------------------------
    3. Pose Landmarker 初期化
@@ -784,23 +713,14 @@ function renderLoop() {
       const rawH = video.videoHeight;
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      ctx.save();
-      if (rotationSteps !== 0) {
-        ctx.translate(overlay.width / 2, overlay.height / 2);
-        ctx.rotate(rotationSteps * (Math.PI / 2)); // 時計回りにステップ数×90°
-        ctx.translate(-rawW / 2, -rawH / 2);
-      }
       ctx.drawImage(video, 0, 0, rawW, rawH);
 
       if (result.landmarks && result.landmarks.length > 0) {
-        // ランドマークは常に「回転前の生の映像」基準の正規化座標なので、
-        // w/hにはrawW/rawHを渡す(回転はこのctxの変換に既に含まれている)。
         drawClothing(ctx, result.landmarks[0], rawW, rawH);
         statusEl.textContent = "";
       } else {
         statusEl.textContent = "人物を検出中...";
       }
-      ctx.restore();
     }
   }
   requestAnimationFrame(renderLoop);
