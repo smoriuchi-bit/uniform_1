@@ -44,10 +44,13 @@
   }
   canvas#overlay {
     position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    max-width: 100%;
-    max-height: 100%;
+    inset: 0;
+    margin: auto;
+    width: 100%;
+    height: 100%;
+    /* 映像の実際のピクセルサイズに関わらず、アスペクト比を保ったまま
+       画面いっぱいに拡大縮小する(小さいサイズのまま表示されるのを防ぐ) */
+    object-fit: contain;
     pointer-events: none;
   }
   #topBar {
@@ -78,7 +81,7 @@
   #controls {
     position: absolute;
     bottom: 0; left: 0; right: 0;
-    padding: 22px 16px 28px;
+    padding: 22px 16px calc(28px + env(safe-area-inset-bottom, 0px));
     display: flex;
     justify-content: center;
     align-items: center;
@@ -776,20 +779,27 @@ closeBtn.addEventListener("click", () => {
 
 /* ---------------------------------------------------------
    7. 実際の表示高さの反映
-   スマホのブラウザは、アドレスバーの表示/非表示によって実際に
-   見える高さが変動する。CSSの100vhはこれを考慮しないため、
-   window.innerHeightを都度測ってCSS変数に反映することで、
+   スマホのブラウザは、アドレスバーやツールバーの表示/非表示によって
+   実際に見える高さが変動する。CSSの100vhはこれを考慮しないため、
+   実際に見えている高さを都度測ってCSS変数に反映することで、
    下端(スカート・シャッターボタン等)が画面外に隠れるのを防ぐ。
+   window.visualViewport.height は、Safari下部ツールバー等の
+   ブラウザUIを除いた「本当に見えている」高さを返すため、
+   window.innerHeight より優先して使う。
 --------------------------------------------------------- */
 function updateAppHeight() {
-  document.documentElement.style.setProperty("--app-height", `${window.innerHeight}px`);
+  const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${h}px`);
 }
 updateAppHeight();
 window.addEventListener("resize", updateAppHeight);
 window.addEventListener("orientationchange", updateAppHeight);
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", updateAppHeight);
+  window.visualViewport.addEventListener("scroll", updateAppHeight);
 }
+// 初回描画直後は正しい値が取れないことがあるため、少し遅らせて再計測する
+setTimeout(updateAppHeight, 300);
 
 /* ---------------------------------------------------------
    8. 画面の向き
