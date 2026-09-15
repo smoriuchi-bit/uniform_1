@@ -427,10 +427,14 @@ const ctx = overlay.getContext("2d");
 const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
+// この端末・ブラウザでは、スマホを縦に持っていてもカメラ映像自体が
+// 横長で送られてくることを実機で確認済み。そのため、映像の実際の
+// サイズを見て「横長で来た場合だけ」自動的に90度回転させる。
+// ボタン等の手動操作は一切必要ない、完全自動の判定。
+let needsRotation = false;
+
 async function setupCamera() {
   try {
-    // スマホは縦持ち前提。回転などの補正は一切行わず、
-    // カメラから来た映像をそのままの向き・サイズで表示する。
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
@@ -443,8 +447,12 @@ async function setupCamera() {
     video.srcObject = stream;
     await video.play();
 
-    overlay.width = video.videoWidth;
-    overlay.height = video.videoHeight;
+    const rawW = video.videoWidth;
+    const rawH = video.videoHeight;
+    needsRotation = rawW > rawH; // 横長で来た場合のみ回転が必要
+
+    overlay.width = needsRotation ? rawH : rawW;
+    overlay.height = needsRotation ? rawW : rawH;
   } catch (err) {
     console.error(err);
     permissionNotice.style.display = "flex";
@@ -713,14 +721,23 @@ function renderLoop() {
       const rawH = video.videoHeight;
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
+      ctx.save();
+      if (needsRotation) {
+        ctx.translate(overlay.width / 2, overlay.height / 2);
+        ctx.rotate(Math.PI / 2); // 時計回りに90°
+        ctx.translate(-rawW / 2, -rawH / 2);
+      }
       ctx.drawImage(video, 0, 0, rawW, rawH);
 
       if (result.landmarks && result.landmarks.length > 0) {
+        // ランドマークは常に「回転前の生の映像」基準の正規化座標。
+        // 回転は既にctxの変換に含まれているので、w/hはrawW/rawHのまま渡す。
         drawClothing(ctx, result.landmarks[0], rawW, rawH);
         statusEl.textContent = "";
       } else {
         statusEl.textContent = "人物を検出中...";
       }
+      ctx.restore();
     }
   }
   requestAnimationFrame(renderLoop);
