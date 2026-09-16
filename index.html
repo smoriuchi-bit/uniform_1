@@ -428,10 +428,25 @@ const statusEl = document.getElementById("status");
 const permissionNotice = document.getElementById("permissionNotice");
 
 // この端末・ブラウザでは、スマホを縦に持っていてもカメラ映像自体が
-// 横長で送られてくることを実機で確認済み。そのため、映像の実際の
-// サイズを見て「横長で来た場合だけ」自動的に90度回転させる。
-// ボタン等の手動操作は一切必要ない、完全自動の判定。
-let needsRotation = false;
+// 横長で送られてくることを実機で確認済み。回転はさせず、代わりに
+// 画面の縦横比に合わせて映像の中央部分だけを切り出して表示する。
+let cropParams = { srcX: 0, cropWidth: 0, rawH: 0 };
+
+function updateCropParams() {
+  const rawW = video.videoWidth;
+  const rawH = video.videoHeight;
+  if (!rawW || !rawH) return;
+
+  // 画面(見えている範囲)の縦横比に合わせて、必要な横幅を逆算する
+  const targetAspect = window.innerWidth / window.innerHeight; // 縦長なら1未満
+  let cropWidth = Math.round(rawH * targetAspect);
+  if (cropWidth > rawW) cropWidth = rawW; // 元映像より広くは切り出せない
+  const srcX = Math.round((rawW - cropWidth) / 2);
+
+  cropParams = { srcX, cropWidth, rawH };
+  overlay.width = cropWidth;
+  overlay.height = rawH;
+}
 
 async function setupCamera() {
   try {
@@ -447,12 +462,9 @@ async function setupCamera() {
     video.srcObject = stream;
     await video.play();
 
-    const rawW = video.videoWidth;
-    const rawH = video.videoHeight;
-    needsRotation = rawW > rawH; // 横長で来た場合のみ回転が必要
-
-    overlay.width = needsRotation ? rawH : rawW;
-    overlay.height = needsRotation ? rawW : rawH;
+    updateCropParams();
+    window.addEventListener("resize", updateCropParams);
+    window.addEventListener("orientationchange", updateCropParams);
   } catch (err) {
     console.error(err);
     permissionNotice.style.display = "flex";
@@ -704,8 +716,9 @@ function drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWid
 
 /* ---------------------------------------------------------
    5. メインループ
-   カメラ映像自体をこのCanvasに毎フレーム描画し(必要なら回転補正)、
-   その上に服を重ね描きする。videoタグ自体は非表示(opacity:0)で、
+   カメラ映像(横長)の中央部分を画面の縦横比に合わせて切り出して
+   このCanvasに毎フレーム描画し、その上に服を重ね描きする。
+   回転は行わない。videoタグ自体は非表示(opacity:0)で、
    単なる映像ソースとしてのみ使う。
 --------------------------------------------------------- */
 let lastVideoTime = -1;
@@ -719,25 +732,24 @@ function renderLoop() {
 
       const rawW = video.videoWidth;
       const rawH = video.videoHeight;
+      const { srcX, cropWidth } = cropParams;
 
       ctx.clearRect(0, 0, overlay.width, overlay.height);
-      ctx.save();
-      if (needsRotation) {
-        ctx.translate(overlay.width / 2, overlay.height / 2);
-        ctx.rotate(Math.PI / 2); // 時計回りに90°
-        ctx.translate(-rawW / 2, -rawH / 2);
-      }
-      ctx.drawImage(video, 0, 0, rawW, rawH);
+      // 横長映像の中央部分だけを、そのままの向きで切り出して描画(回転なし)
+      ctx.drawImage(video, srcX, 0, cropWidth, rawH, 0, 0, cropWidth, rawH);
 
       if (result.landmarks && result.landmarks.length > 0) {
-        // ランドマークは常に「回転前の生の映像」基準の正規化座標。
-        // 回転は既にctxの変換に含まれているので、w/hはrawW/rawHのまま渡す。
-        drawClothing(ctx, result.landmarks[0], rawW, rawH);
+        // ランドマークは「切り出す前の生の映像全体」基準の正規化座標なので、
+        // 切り出し後のCanvas座標系に合わせて変換してから描画に渡す。
+        const remapped = result.landmarks[0].map((lm) => ({
+          ...lm,
+          x: (lm.x * rawW - srcX) / cropWidth,
+        }));
+        drawClothing(ctx, remapped, cropWidth, rawH);
         statusEl.textContent = "";
       } else {
         statusEl.textContent = "人物を検出中...";
       }
-      ctx.restore();
     }
   }
   requestAnimationFrame(renderLoop);
@@ -745,7 +757,7 @@ function renderLoop() {
 
 /* ---------------------------------------------------------
    6. 撮影処理
-   overlay Canvasには毎フレーム「カメラ映像(回転補正済み)+服」が
+   overlay Canvasには毎フレーム「カメラ映像(中央クロップ済み)+服」が
    合成描画されているので、そのまま複製するだけでよい。
 --------------------------------------------------------- */
 const shutterBtn = document.getElementById("shutter");
