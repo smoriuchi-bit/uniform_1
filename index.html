@@ -282,49 +282,66 @@ import {
    プレースホルダー(動作確認・デモ切り替え用)。
 --------------------------------------------------------- */
 const ITEMS = {
-  // 実際の制服画像を使うアイテム(肩に固定して表示するシンプル版)。
-  // anchor は画像内での「肩ライン」の位置を表す基準値で、
-  // 画像作成時に一度だけ計測しておく(単位はimg自体のpx)。
-  seifuku_blazer: {
-    label: "紺ブレザー制服(上下)",
-    type: "image",
-    src: "uniform_blazer_skirt.png",
-    anchor: {
-      imgWidth: 350,
-      imgHeight: 583,
-      shoulderCenterX: 165.5, // 画像内で両肩の中点のx座標
-      shoulderY: 86,          // 画像内で肩ラインのy座標
-      shoulderWidth: 265,     // 画像内での肩幅(px)
-    },
-    // 検出した肩幅に対して、どのくらいの倍率で服を大きく見せるか。
-    // 人体の肩関節幅よりジャケットの肩幅は外側に出るため、少し大きめにする。
-    widthMultiplier: 1.35,
-  },
+  // 実際の制服画像(透過PNG)を肩に固定して重ねるシンプル版。
+  // anchor は画像内での「肩の位置」の基準値(単位は画像自体のpx):
+  //   shoulderCenterX ... 両肩の中点のx座標
+  //   shoulderY       ... 肩関節の高さ(y座標)
+  //   shoulderWidth   ... 肩関節どうしの間隔(服の肩先〜肩先の約0.88倍)
+  // widthMultiplier は、検出した肩幅に対して服を何倍の大きさで表示するか。
+  // 服が小さすぎる/大きすぎる場合はこの値を、
+  // 上下にズレる場合は shoulderY を調整する(大きくすると服が上へ、小さくすると下へ動く)。
+  // QRコードのURLは ?item=キー名 で指定する(キー名は変えないこと)。
   seifuku_sailor: {
-    label: "セーラー服(上下)",
+    label: "女子セーラー",
     type: "image",
-    src: "uniform_sailor.png",
+    src: "uniform_f_sailor.png",
     anchor: {
-      imgWidth: 286,
-      imgHeight: 481,
-      shoulderCenterX: 141,
-      shoulderY: 75,
-      shoulderWidth: 244,
+      imgWidth: 503,
+      imgHeight: 1069,
+      shoulderCenterX: 250,
+      shoulderY: 92,
+      shoulderWidth: 356,
     },
-    widthMultiplier: 1.5,
+    widthMultiplier: 1.1,
+  },
+  seifuku_blazer: {
+    label: "女子ブレザー",
+    type: "image",
+    src: "uniform_f_blazer.png",
+    anchor: {
+      imgWidth: 346,
+      imgHeight: 718,
+      shoulderCenterX: 176,
+      shoulderY: 108,
+      shoulderWidth: 224,
+    },
+    widthMultiplier: 1.1,
   },
   seifuku_polo: {
-    label: "ポロシャツ(上下)",
+    label: "男子ポロシャツ",
     type: "image",
-    src: "uniform_polo.png",
+    src: "uniform_m_polo.png",
     anchor: {
-      imgWidth: 350,
-      imgHeight: 703,
-      shoulderCenterX: 168.91,
-      shoulderY: 49.84,
-      shoulderWidth: 200.47,
+      imgWidth: 411,
+      imgHeight: 1077,
+      shoulderCenterX: 201,
+      shoulderY: 80,
+      shoulderWidth: 275,
     },
-    widthMultiplier: 1.05,
+    widthMultiplier: 1.1,
+  },
+  seifuku_blazer_m: {
+    label: "男子ブレザー",
+    type: "image",
+    src: "uniform_m_blazer.png",
+    anchor: {
+      imgWidth: 391,
+      imgHeight: 1117,
+      shoulderCenterX: 180,
+      shoulderY: 85,
+      shoulderWidth: 304,
+    },
+    widthMultiplier: 1.1,
   },
 };
 
@@ -460,6 +477,10 @@ async function setupCamera() {
 --------------------------------------------------------- */
 let poseLandmarker;
 
+// 同時に検出・着せ替えする最大人数。
+// 増やすほど処理が重くなる(スマホでは4人程度が目安)。
+const MAX_PEOPLE = 4;
+
 async function setupPose() {
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -471,7 +492,7 @@ async function setupPose() {
       delegate: "GPU",
     },
     runningMode: "VIDEO",
-    numPoses: 1,
+    numPoses: MAX_PEOPLE,
   });
 }
 
@@ -720,18 +741,38 @@ function renderLoop() {
       // 横長映像の中央部分だけを、そのままの向きで切り出して描画(回転なし)
       ctx.drawImage(video, srcX, 0, cropWidth, rawH, 0, 0, cropWidth, rawH);
 
-      if (result.landmarks && result.landmarks.length > 0) {
-        // ランドマークは「切り出す前の生の映像全体」基準の正規化座標なので、
-        // 切り出し後のCanvas座標系に合わせて変換してから描画に渡す。
-        const remapped = result.landmarks[0].map((lm) => ({
+      // 検出された全員分について、切り出し後のCanvas座標系に変換する。
+      // ランドマークは「切り出す前の生の映像全体」基準の正規化座標なので、
+      // x座標を切り出し範囲基準に直してから描画に渡す。
+      const people = [];
+      for (const lms of result.landmarks || []) {
+        const remapped = lms.map((lm) => ({
           ...lm,
           x: (lm.x * rawW - srcX) / cropWidth,
         }));
-        drawClothing(ctx, remapped, cropWidth, rawH);
-        statusEl.textContent = "";
-      } else {
-        statusEl.textContent = "人物を検出中...";
+        const ls = remapped[11];
+        const rs = remapped[12];
+        if (!ls || !rs) continue;
+
+        // 肩が十分に見えていない検出(ノイズや、画面端で切れた人)は除外
+        if ((ls.visibility ?? 1) < 0.4 || (rs.visibility ?? 1) < 0.4) continue;
+
+        // 肩の中心が切り出し範囲の外(画面外)にいる人は描画しない
+        const centerX = (ls.x + rs.x) / 2;
+        if (centerX < -0.1 || centerX > 1.1) continue;
+
+        // 肩幅(画面上のピクセル)。手前にいる人ほど大きい。
+        const shoulderPx = Math.hypot((ls.x - rs.x) * cropWidth, (ls.y - rs.y) * rawH);
+        people.push({ remapped, shoulderPx });
       }
+
+      // 奥(肩幅が小さい=遠い)の人から先に描き、手前の人の服が上に重なるようにする
+      people.sort((a, b) => a.shoulderPx - b.shoulderPx);
+      for (const person of people) {
+        drawClothing(ctx, person.remapped, cropWidth, rawH);
+      }
+
+      statusEl.textContent = people.length > 0 ? "" : "人物を検出中...";
     }
   }
   requestAnimationFrame(renderLoop);
