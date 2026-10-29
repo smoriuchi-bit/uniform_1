@@ -220,22 +220,30 @@
     color: var(--muted);
     z-index: 15;
   }
-  #landscapeNotice {
-    position: fixed;
-    inset: 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 24px;
-    font-size: 16px;
-    line-height: 1.6;
-    color: var(--text);
-    background: rgba(5, 6, 8, 0.97);
-    z-index: 40;
-  }
-  #landscapeNotice.show {
-    display: flex;
+  /* 横向き(ランドスケープ)のときのレイアウト */
+  @media (orientation: landscape) {
+    #topBar {
+      padding-left: calc(16px + env(safe-area-inset-left, 0px));
+      padding-right: 130px;
+    }
+    #status {
+      left: calc(16px + env(safe-area-inset-left, 0px));
+    }
+    #controls {
+      top: 0; bottom: 0; left: auto; right: 0;
+      width: calc(112px + env(safe-area-inset-right, 0px));
+      padding: 16px calc(16px + env(safe-area-inset-right, 0px)) 16px 16px;
+      flex-direction: column;
+      background: linear-gradient(to left, rgba(0,0,0,.6), transparent);
+    }
+    #picker {
+      left: calc(12px + env(safe-area-inset-left, 0px));
+      bottom: 12px;
+      transform: translate(0, 12px);
+      width: min(62%, 460px);
+    }
+    #picker.show { transform: translate(0, 0); }
+    #picker .picker-row button img { height: 52px; }
   }
 </style>
 </head>
@@ -267,10 +275,6 @@
     カメラへのアクセスを許可してください。<br />
     ※このデモはHTTPS環境(またはlocalhost)で動作します。file:// で直接開いた場合はカメラが動作しません。
   </div>
-</div>
-
-<div id="landscapeNotice">
-  📱 スマホを縦向きにしてご利用ください
 </div>
 
 <div id="preview">
@@ -471,6 +475,8 @@ async function setupPose() {
    人物ごとに「肩の中心・角度・肩幅」を計算し、その人が着ている
    制服の画像を、肩幅に合わせて拡大縮小・回転して重ねる。
 --------------------------------------------------------- */
+const MAX_TILT_RAD = 0.45; // 服の傾きの上限(約26°)。検出のブレで極端に傾くのを防ぐ
+
 function getBodyGeometry(landmarks, w, h) {
   const ls = landmarks[11]; // 被写体本人から見た左肩
   const rs = landmarks[12]; // 被写体本人から見た右肩
@@ -482,18 +488,61 @@ function getBodyGeometry(landmarks, w, h) {
   const shoulder12 = { x: rs.x * w, y: rs.y * h };
 
   // MediaPipeの11/12番は「被写体本人から見た」左右のため、カメラに正対していると
-  // 画像上では逆(向かって右に本人の左肩)になる。回転角は画像上の左右で揃える。
+  // 画像上では逆(向かって右に本人の左肩)になる。左右は画像上のx座標で揃える。
   const imgLeft = shoulder11.x < shoulder12.x ? shoulder11 : shoulder12;
   const imgRight = shoulder11.x < shoulder12.x ? shoulder12 : shoulder11;
 
+  const centerX = (imgLeft.x + imgRight.x) / 2;
+  const centerY = (imgLeft.y + imgRight.y) / 2;
+  const hipX = ((lh.x + rh.x) / 2) * w;
+  const hipY = ((lh.y + rh.y) / 2) * h;
+
+  // 服の傾き。
+  // ・肩の線だけから決めると、肩の位置が少しずれただけで角度が大きく振れ、
+  //   体より服の方が傾いて見える(小さく写る人ほど顕著)。
+  // ・そこで、体の軸(肩の中心→腰の中心)の傾きを主に使い、肩の線は補助にする。
+  //   服の縦方向(スカート・ズボンの向き)も、この軸に沿うのが自然。
+  // ・腰がよく見えていない場合は、当てにならないので肩の線の影響を半分に弱める。
+  const shoulderAngle = Math.atan2(imgRight.y - imgLeft.y, imgRight.x - imgLeft.x);
+  const hipVis = Math.min(lh.visibility ?? 1, rh.visibility ?? 1);
+  let torsoAngle = null;
+  let angle;
+  if (hipVis >= 0.5 && Math.hypot(hipX - centerX, hipY - centerY) > 1) {
+    torsoAngle = Math.atan2(centerX - hipX, hipY - centerY); // 鉛直からの傾き(右に倒れる向きが正)
+    angle = 0.25 * shoulderAngle + 0.75 * torsoAngle;
+  } else {
+    angle = 0.5 * shoulderAngle;
+  }
+  angle = Math.max(-MAX_TILT_RAD, Math.min(MAX_TILT_RAD, angle));
+
   return {
-    centerX: (imgLeft.x + imgRight.x) / 2,
-    centerY: (imgLeft.y + imgRight.y) / 2,
+    centerX, centerY,
     shoulderWidthPx: Math.hypot(imgRight.x - imgLeft.x, imgRight.y - imgLeft.y),
-    angle: Math.atan2(imgRight.y - imgLeft.y, imgRight.x - imgLeft.x),
-    hipX: ((lh.x + rh.x) / 2) * w,
-    hipY: ((lh.y + rh.y) / 2) * h,
+    angle,
+    hipX, hipY,
+    // 以下は ?debug=1 の確認表示用
+    lx: imgLeft.x, ly: imgLeft.y, rx: imgRight.x, ry: imgRight.y,
+    shoulderAngle, torsoAngle,
   };
+}
+
+// ?debug=1 用: 検出された肩の線(黄)と体の軸(水色)、角度を重ねて表示する
+function drawDebugSkeleton(ctxTarget, raw, drawnAngle) {
+  const deg = (r) => `${Math.round((r * 180) / Math.PI)}°`;
+  ctxTarget.save();
+  ctxTarget.lineWidth = 4;
+  ctxTarget.strokeStyle = "#ffd400";
+  ctxTarget.beginPath(); ctxTarget.moveTo(raw.lx, raw.ly); ctxTarget.lineTo(raw.rx, raw.ry); ctxTarget.stroke();
+  ctxTarget.strokeStyle = "#00e5ff";
+  ctxTarget.beginPath(); ctxTarget.moveTo(raw.centerX, raw.centerY); ctxTarget.lineTo(raw.hipX, raw.hipY); ctxTarget.stroke();
+  ctxTarget.fillStyle = "#ffffff";
+  ctxTarget.strokeStyle = "#000000";
+  ctxTarget.lineWidth = 3;
+  ctxTarget.font = "bold 26px sans-serif";
+  const text = `肩${deg(raw.shoulderAngle)} 胴${raw.torsoAngle == null ? "-" : deg(raw.torsoAngle)} 服${deg(drawnAngle)}`;
+  ctxTarget.strokeText(text, raw.centerX - 90, raw.centerY - 24);
+  ctxTarget.fillText(text, raw.centerX - 90, raw.centerY - 24);
+  ctxTarget.restore();
 }
 
 // 1人分の服を描画する。タップ判定に使うため、描画位置の情報を返す。
@@ -535,6 +584,7 @@ const TRACK_TTL_MS = 2500;   // 検出が途切れても、この時間内に戻
 const HOLD_FULL_MS = 250;    // 検出が途切れても、この時間までは服をそのまま表示し続ける
 const HOLD_FADE_MS = 800;    // この時間にかけて徐々に薄くして消す(人が去った時に残像が居座らないため)
 const SMOOTH_K = 0.55;       // 位置の平滑化(大きいほど追従が速く、小さいほど滑らか)
+const ANGLE_SMOOTH_K = 0.3;  // 傾きは細かいブレが目立つので、位置より強めに平滑化する
 const MATCH_MAX_DIST = 1.6;  // 肩幅の何倍まで動いたら「別の人」とみなすか
 let tracks = [];             // { id, cx, cy, size, lastSeen, itemKey }
 let nextTrackId = 1;
@@ -546,7 +596,7 @@ function smoothGeom(prev, next) {
     centerX: m(prev.centerX, next.centerX),
     centerY: m(prev.centerY, next.centerY),
     shoulderWidthPx: m(prev.shoulderWidthPx, next.shoulderWidthPx),
-    angle: m(prev.angle, next.angle),
+    angle: prev.angle + (next.angle - prev.angle) * ANGLE_SMOOTH_K,
     hipX: m(prev.hipX, next.hipX),
     hipY: m(prev.hipY, next.hipY),
   };
@@ -572,6 +622,7 @@ function updateTracks(people, nowMs) {
     const p = people[pi];
     t.cx = p.cx; t.cy = p.cy; t.size = p.size; t.lastSeen = nowMs;
     t.geom = smoothGeom(t.geom, p.geom);
+    t.raw = p.geom; // 確認表示用(平滑化前の肩・腰の位置)
     p.track = t;
   }
   // 既存の人に対応しなかった検出は、新しく現れた人。最初はデフォルトの制服を着る。
@@ -719,6 +770,7 @@ overlay.addEventListener("click", (ev) => {
    単なる映像ソースとしてのみ使う。
 --------------------------------------------------------- */
 let lastVideoTime = -1;
+let lastCropSig = "";
 
 function renderLoop() {
   if (video.readyState >= 2 && poseLandmarker) {
@@ -728,6 +780,12 @@ function renderLoop() {
       const result = POSE_MODE === "IMAGE"
         ? poseLandmarker.detect(video)
         : poseLandmarker.detectForVideo(video, nowMs);
+
+      const cropSig = `${video.videoWidth}x${video.videoHeight}@${window.innerWidth}x${window.innerHeight}`;
+      if (cropSig !== lastCropSig) {
+        updateCropParams();
+        lastCropSig = cropSig;
+      }
 
       const rawW = video.videoWidth;
       const rawH = video.videoHeight;
@@ -800,6 +858,7 @@ function renderLoop() {
       for (const { t, alpha } of drawList) {
         const g = drawClothing(ctx, t.geom, t.itemKey, t.id === selectedTrackId, alpha);
         if (g) hitTargets.push({ trackId: t.id, itemKey: t.itemKey, geom: t.geom, g });
+        if (DEBUG && t.raw && alpha === 1) drawDebugSkeleton(ctx, t.raw, t.geom.angle);
       }
 
       if (DEBUG) {
@@ -905,36 +964,16 @@ setTimeout(updateAppHeight, 300);
 
 /* ---------------------------------------------------------
    8. 画面の向き
-   ブラウザの制約上、確実な縦向き固定はできない(特にiOS Safariは
-   screen.orientation.lock 自体が未対応)。そのため:
-   - Android Chrome等で使える場合はベストエフォートでロックを試みる
-   - どのブラウザでも、横向きになったら警告を表示して気づかせる
-   の二段構えにしている。
+   縦向き・横向きのどちらでも使える。スマホを回すと、画面の縦横比に合わせて
+   映像の切り出し範囲(updateCropParams)とレイアウト(CSSの@media)が切り替わる。
+   iPhoneで「画面縦向きのロック」がオンだと、ブラウザは向きの変化を検知できない。
 --------------------------------------------------------- */
-const landscapeNotice = document.getElementById("landscapeNotice");
-
-function updateOrientationNotice() {
-  const isLandscape = window.matchMedia("(orientation: landscape)").matches;
-  landscapeNotice.classList.toggle("show", isLandscape);
-}
-window.addEventListener("resize", updateOrientationNotice);
-window.addEventListener("orientationchange", updateOrientationNotice);
-updateOrientationNotice();
-
-function tryLockPortrait() {
-  if (screen.orientation && screen.orientation.lock) {
-    // 対応ブラウザでも、フルスクリーンでない場合は失敗することが多いため
-    // エラーは黙って無視する(横向き警告が保険として機能する)。
-    screen.orientation.lock("portrait").catch(() => {});
-  }
-}
 
 /* ---------------------------------------------------------
    9. 起動
 --------------------------------------------------------- */
 (async function init() {
   try {
-    tryLockPortrait();
     await setupCamera();
     statusEl.textContent = "姿勢推定モデルを読み込み中...";
     await setupPose();
