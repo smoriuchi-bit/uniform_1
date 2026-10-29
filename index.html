@@ -51,7 +51,9 @@
     /* 映像の実際のピクセルサイズに関わらず、アスペクト比を保ったまま
        画面いっぱいに拡大縮小する(小さいサイズのまま表示されるのを防ぐ) */
     object-fit: contain;
-    pointer-events: none;
+    pointer-events: auto;
+    cursor: pointer;
+    touch-action: manipulation;
   }
   #topBar {
     position: absolute;
@@ -62,6 +64,7 @@
     align-items: center;
     z-index: 10;
     background: linear-gradient(to bottom, rgba(0,0,0,.55), transparent);
+    pointer-events: none;
   }
   #topBar .item-name {
     font-size: 14px;
@@ -72,6 +75,7 @@
     font-weight: 600;
   }
   #status {
+    pointer-events: none;
     position: absolute;
     top: 54px; left: 16px;
     font-size: 12px;
@@ -88,8 +92,10 @@
     gap: 24px;
     z-index: 10;
     background: linear-gradient(to top, rgba(0,0,0,.6), transparent);
+    pointer-events: none;
   }
   #shutter {
+    pointer-events: auto;
     width: 68px;
     height: 68px;
     border-radius: 50%;
@@ -106,68 +112,75 @@
     background: var(--text);
   }
   #shutter:active::after { background: var(--accent); }
-  #demoSwitcher {
+  #picker {
     position: absolute;
-    right: 12px;
-    top: 90px;
-    bottom: 110px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    z-index: 10;
-    overflow-y: auto;
-    max-width: 48%;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none; /* Firefox */
-    opacity: 1;
-    transform: translateX(0);
-    transition: opacity 0.3s ease, transform 0.3s ease;
-  }
-  #demoSwitcher.collapsed {
-    opacity: 0;
-    transform: translateX(16px);
-    pointer-events: none;
-  }
-  #demoSwitcher::-webkit-scrollbar {
-    display: none; /* Chrome/Safari */
-  }
-  #switcherToggle {
-    position: absolute;
-    right: 12px;
-    top: 90px;
-    z-index: 10;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 1px solid #444;
-    background: rgba(20,22,25,.8);
-    color: var(--text);
-    font-size: 18px;
-    cursor: pointer;
+    left: 50%;
+    bottom: calc(132px + env(safe-area-inset-bottom, 0px));
+    transform: translate(-50%, 12px);
+    width: min(94%, 420px);
+    background: rgba(18,20,23,.94);
+    border: 1px solid #3a3f44;
+    border-radius: 16px;
+    padding: 10px 10px 12px;
+    z-index: 12;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.3s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    transition: opacity .2s ease, transform .2s ease;
   }
-  #switcherToggle.show {
+  #picker.show {
     opacity: 1;
+    transform: translate(-50%, 0);
     pointer-events: auto;
   }
-  #demoSwitcher button {
-    font-size: 11px;
-    padding: 6px 10px;
-    border-radius: 20px;
-    border: 1px solid #444;
-    background: rgba(20,22,25,.8);
-    color: var(--text);
-    cursor: pointer;
-    flex-shrink: 0;
+  #picker .picker-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin: 0 4px 8px;
   }
-  #demoSwitcher button.active {
+  #picker .picker-head button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 16px;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  #picker .picker-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  #picker .picker-row button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 2px 6px;
+    border-radius: 12px;
+    border: 1px solid #3a3f44;
+    background: rgba(255,255,255,.04);
+    color: var(--text);
+    font-size: 10px;
+    line-height: 1.2;
+    cursor: pointer;
+  }
+  #picker .picker-row button img {
+    width: 100%;
+    height: 64px;
+    object-fit: cover;
+    object-position: top center; /* 服の上半身(襟まわり)が見えるように切り出す */
+    border-radius: 8px;
+  }
+  #picker .picker-row button.active {
     border-color: var(--accent);
     color: var(--accent);
+  }
+  #topBar .item-name.hide {
+    opacity: 0;
+    transition: opacity .6s ease;
   }
   #preview {
     position: fixed;
@@ -233,15 +246,18 @@
   <canvas id="overlay"></canvas>
 
   <div id="topBar">
-    <div class="item-name">着用中: <strong id="itemLabel">-</strong></div>
+    <div class="item-name" id="hint">人物の服をタップすると、その人だけ着せ替えできます</div>
   </div>
   <div id="status">姿勢推定を初期化中...</div>
 
-  <!-- 実運用ではQRごとにURLの ?item=xxx が変わる想定。
-       デモ用に手動切り替えボタンを用意(本番では削除してよい)。
-       撮影の邪魔にならないよう、5秒操作がないと自動でたたまれる。 -->
-  <div id="demoSwitcher"></div>
-  <button id="switcherToggle" aria-label="服の一覧を表示">👕</button>
+  <!-- 人物の服をタップすると、その人の制服を選ぶパネルが開く -->
+  <div id="picker" aria-hidden="true">
+    <div class="picker-head">
+      <span>この人の制服を選ぶ</span>
+      <button id="pickerClose" aria-label="閉じる">✕</button>
+    </div>
+    <div class="picker-row" id="pickerRow"></div>
+  </div>
 
   <div id="controls">
     <button id="shutter" aria-label="撮影"></button>
@@ -345,77 +361,20 @@ const ITEMS = {
   },
 };
 
-// type: "image" / "rigged" のアイテムは事前に読み込んでおく
+// 制服画像は事前に読み込んでおく
 const loadedImages = {};
-const RIGGED_PART_KEYS = ["torso", "leftUpper", "leftFore", "rightUpper", "rightFore"];
-
 Object.entries(ITEMS).forEach(([key, item]) => {
-  if (item.type === "image") {
-    const img = new Image();
-    img.src = item.src;
-    loadedImages[key] = img;
-  } else if (item.type === "rigged") {
-    RIGGED_PART_KEYS.forEach((partKey) => {
-      const img = new Image();
-      img.src = item[partKey].file;
-      loadedImages[`${key}__${partKey}`] = img;
-    });
-  }
+  const img = new Image();
+  img.src = item.src;
+  loadedImages[key] = img;
 });
 
 const params = new URLSearchParams(location.search);
-let currentItemKey = params.get("item") && ITEMS[params.get("item")]
+// 新しく画面に写った人が最初に着る制服。QRコードのURL(?item=キー名)で指定できる。
+// 指定がなければ女子ブレザー。人物をタップして個別に変更できる。
+const defaultItemKey = params.get("item") && ITEMS[params.get("item")]
   ? params.get("item")
   : "seifuku_blazer";
-
-const itemLabelEl = document.getElementById("itemLabel");
-const demoSwitcher = document.getElementById("demoSwitcher");
-const switcherToggle = document.getElementById("switcherToggle");
-
-function renderSwitcher() {
-  demoSwitcher.innerHTML = "";
-  Object.entries(ITEMS).forEach(([key, item]) => {
-    const btn = document.createElement("button");
-    btn.textContent = item.label;
-    btn.className = key === currentItemKey ? "active" : "";
-    btn.onclick = () => {
-      currentItemKey = key;
-      renderSwitcher();
-      itemLabelEl.textContent = ITEMS[currentItemKey].label;
-      restartSwitcherCollapseTimer();
-    };
-    demoSwitcher.appendChild(btn);
-  });
-  itemLabelEl.textContent = ITEMS[currentItemKey].label;
-}
-renderSwitcher();
-
-/* ---------------------------------------------------------
-   1b. 服切り替え一覧の自動折りたたみ
-   撮影の邪魔にならないよう、5秒操作がないと自動的にたたまれ、
-   小さいアイコンボタンだけが残る。アイコンをタップすると再度開く。
---------------------------------------------------------- */
-const SWITCHER_COLLAPSE_DELAY_MS = 5000;
-let switcherCollapseTimer = null;
-
-function collapseSwitcher() {
-  demoSwitcher.classList.add("collapsed");
-  switcherToggle.classList.add("show");
-}
-
-function expandSwitcher() {
-  demoSwitcher.classList.remove("collapsed");
-  switcherToggle.classList.remove("show");
-  restartSwitcherCollapseTimer();
-}
-
-function restartSwitcherCollapseTimer() {
-  clearTimeout(switcherCollapseTimer);
-  switcherCollapseTimer = setTimeout(collapseSwitcher, SWITCHER_COLLAPSE_DELAY_MS);
-}
-
-switcherToggle.addEventListener("click", expandSwitcher);
-restartSwitcherCollapseTimer();
 
 /* ---------------------------------------------------------
    2. カメラ初期化
@@ -498,229 +457,234 @@ async function setupPose() {
 
 /* ---------------------------------------------------------
    4. 服オーバーレイ描画
-   共通の姿勢ジオメトリ(肩の中心・角度・肩幅)を計算したうえで、
-   アイテムの type に応じて画像描画 or シルエット描画に振り分ける。
+   人物ごとに「肩の中心・角度・肩幅」を計算し、その人が着ている
+   制服の画像を、肩幅に合わせて拡大縮小・回転して重ねる。
 --------------------------------------------------------- */
-function drawClothing(ctxTarget, landmarks, w, h) {
+function getBodyGeometry(landmarks, w, h) {
   const ls = landmarks[11]; // 被写体本人から見た左肩
   const rs = landmarks[12]; // 被写体本人から見た右肩
   const lh = landmarks[23]; // 被写体本人から見た左腰
   const rh = landmarks[24]; // 被写体本人から見た右腰
-  if (!ls || !rs || !lh || !rh) return;
+  if (!ls || !rs || !lh || !rh) return null;
 
   const shoulder11 = { x: ls.x * w, y: ls.y * h };
   const shoulder12 = { x: rs.x * w, y: rs.y * h };
-  const hip23 = { x: lh.x * w, y: lh.y * h };
-  const hip24 = { x: rh.x * w, y: rh.y * h };
 
-  // MediaPipeの11/12番は「被写体本人から見た」左右のため、
-  // カメラに正対している場合は画像上ではこれが逆(向かって右に本人の左肩)になる。
-  // 回転角は画像座標上の左右で揃えないと、服が180度近く反転してしまう。
-  const imgLeftShoulder = shoulder11.x < shoulder12.x ? shoulder11 : shoulder12;
-  const imgRightShoulder = shoulder11.x < shoulder12.x ? shoulder12 : shoulder11;
+  // MediaPipeの11/12番は「被写体本人から見た」左右のため、カメラに正対していると
+  // 画像上では逆(向かって右に本人の左肩)になる。回転角は画像上の左右で揃える。
+  const imgLeft = shoulder11.x < shoulder12.x ? shoulder11 : shoulder12;
+  const imgRight = shoulder11.x < shoulder12.x ? shoulder12 : shoulder11;
 
-  const centerX = (imgLeftShoulder.x + imgRightShoulder.x) / 2;
-  const centerY = (imgLeftShoulder.y + imgRightShoulder.y) / 2;
-  const shoulderWidthPx = Math.hypot(
-    imgRightShoulder.x - imgLeftShoulder.x,
-    imgRightShoulder.y - imgLeftShoulder.y
-  );
-  const hipCenterX = (hip23.x + hip24.x) / 2;
-  const hipCenterY = (hip23.y + hip24.y) / 2;
-  const torsoHeight = Math.hypot(
-    hipCenterY - centerY,
-    hipCenterX - centerX
-  );
-  const angle = Math.atan2(
-    imgRightShoulder.y - imgLeftShoulder.y,
-    imgRightShoulder.x - imgLeftShoulder.x
-  );
-
-  const item = ITEMS[currentItemKey];
-  if (!item) return;
-
-  if (item.type === "rigged") {
-    const leftIsImageLeft = shoulder11.x < shoulder12.x;
-    drawClothingRigged(
-      ctxTarget, currentItemKey, item, landmarks, w, h,
-      centerX, centerY, angle, shoulderWidthPx, leftIsImageLeft
-    );
-  } else if (item.type === "image") {
-    drawClothingImage(ctxTarget, currentItemKey, item, centerX, centerY, angle, shoulderWidthPx);
-  } else {
-    drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWidthPx, torsoHeight);
-  }
+  return {
+    centerX: (imgLeft.x + imgRight.x) / 2,
+    centerY: (imgLeft.y + imgRight.y) / 2,
+    shoulderWidthPx: Math.hypot(imgRight.x - imgLeft.x, imgRight.y - imgLeft.y),
+    angle: Math.atan2(imgRight.y - imgLeft.y, imgRight.x - imgLeft.x),
+    hipX: ((lh.x + rh.x) / 2) * w,
+    hipY: ((lh.y + rh.y) / 2) * h,
+  };
 }
 
-/* ---------------------------------------------------------
-   4a-2. 肩・肘の動きに追従する多パーツ画像描画
-   胴体は肩ラインに固定、上腕は肩関節を軸に、前腕は肘関節を軸に
-   それぞれ独立して回転させる(手首側の位置は前腕の見た目の
-   向きの計算にのみ使用し、描画の基準点は使わない)。
---------------------------------------------------------- */
-function rotateVec(dx, dy, ang) {
-  const cos = Math.cos(ang), sin = Math.sin(ang);
-  return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
-}
-
-function drawClothingRigged(
-  ctxTarget, itemKey, item, landmarks, w, h,
-  centerX, centerY, torsoAngle, shoulderWidthPx, leftIsImageLeft
-) {
-  const torsoImg = loadedImages[`${itemKey}__torso`];
-  if (!torsoImg || !torsoImg.complete || torsoImg.naturalWidth === 0) return;
-
-  const multiplier = item.widthMultiplier || 1.0;
-  const scale = (shoulderWidthPx / item.torso.shoulderWidth) * multiplier;
-
-  // --- 胴体(肩ラインに固定、追加回転なし) ---
-  ctxTarget.save();
-  ctxTarget.translate(centerX, centerY);
-  ctxTarget.rotate(torsoAngle);
-  ctxTarget.drawImage(
-    torsoImg,
-    -item.torso.shoulderCenterX * scale,
-    -item.torso.shoulderY * scale,
-    torsoImg.naturalWidth * scale,
-    torsoImg.naturalHeight * scale
-  );
-  ctxTarget.restore();
-
-  // --- 腕(肩・肘それぞれを軸に回転) ---
-  // ランドマーク: 11/13/15=本人の左肩/左肘/左手首, 12/14/16=右肩/右肘/右手首
-  const chains = leftIsImageLeft
-    ? { left: [11, 13, 15], right: [12, 14, 16] }
-    : { left: [12, 14, 16], right: [11, 13, 15] };
-
-  drawArmChain(ctxTarget, torsoImg, centerX, centerY, torsoAngle, scale, landmarks, w, h,
-    chains.left, item.leftUpper, item.leftFore, itemKey, "left");
-  drawArmChain(ctxTarget, torsoImg, centerX, centerY, torsoAngle, scale, landmarks, w, h,
-    chains.right, item.rightUpper, item.rightFore, itemKey, "right");
-}
-
-function drawArmChain(
-  ctxTarget, torsoImgUnused, centerX, centerY, torsoAngle, scale,
-  landmarks, w, h, [shoulderIdx, elbowIdx, wristIdx], upperDef, foreDef, itemKey, side
-) {
-  const shoulderLm = landmarks[shoulderIdx];
-  const elbowLm = landmarks[elbowIdx];
-  const wristLm = landmarks[wristIdx];
-  if (!shoulderLm || !elbowLm || !wristLm) return;
-
-  const shoulderPt = { x: shoulderLm.x * w, y: shoulderLm.y * h };
-  const elbowPt = { x: elbowLm.x * w, y: elbowLm.y * h };
-  const wristPt = { x: wristLm.x * w, y: wristLm.y * h };
-
-  // 全身の傾き(torsoAngle)を打ち消した「胴体基準のローカル座標」に変換する。
-  // これにより、元の制服写真と同じ座標系で角度を比較できる。
-  const localShoulder = rotateVec(shoulderPt.x - centerX, shoulderPt.y - centerY, -torsoAngle);
-  const localElbow = rotateVec(elbowPt.x - centerX, elbowPt.y - centerY, -torsoAngle);
-  const localWrist = rotateVec(wristPt.x - centerX, wristPt.y - centerY, -torsoAngle);
-
-  const currentUpperAngle = Math.atan2(localElbow.y - localShoulder.y, localElbow.x - localShoulder.x);
-  const currentForeAngle = Math.atan2(localWrist.y - localElbow.y, localWrist.x - localElbow.x);
-
-  const upperImg = loadedImages[`${itemKey}__${side}Upper`];
-  const foreImg = loadedImages[`${itemKey}__${side}Fore`];
-
-  // --- 上腕(肩を軸に回転) ---
-  if (upperImg && upperImg.complete && upperImg.naturalWidth > 0) {
-    const deltaUpper = currentUpperAngle - upperDef.refAngle;
-    ctxTarget.save();
-    ctxTarget.translate(centerX, centerY);
-    ctxTarget.rotate(torsoAngle);
-    ctxTarget.translate(localShoulder.x * scale, localShoulder.y * scale);
-    ctxTarget.rotate(deltaUpper);
-    ctxTarget.drawImage(
-      upperImg,
-      -upperDef.pivotX * scale,
-      -upperDef.pivotY * scale,
-      upperImg.naturalWidth * scale,
-      upperImg.naturalHeight * scale
-    );
-    ctxTarget.restore();
-  }
-
-  // --- 前腕(肘を軸に回転) ---
-  if (foreImg && foreImg.complete && foreImg.naturalWidth > 0) {
-    const deltaFore = currentForeAngle - foreDef.refAngle;
-    ctxTarget.save();
-    ctxTarget.translate(centerX, centerY);
-    ctxTarget.rotate(torsoAngle);
-    ctxTarget.translate(localElbow.x * scale, localElbow.y * scale);
-    ctxTarget.rotate(deltaFore);
-    ctxTarget.drawImage(
-      foreImg,
-      -foreDef.pivotX * scale,
-      -foreDef.pivotY * scale,
-      foreImg.naturalWidth * scale,
-      foreImg.naturalHeight * scale
-    );
-    ctxTarget.restore();
-  }
-}
-
-/* ---------------------------------------------------------
-   4a. 実画像を使った服オーバーレイ描画
-   anchor(画像内の肩幅・肩の中心・肩ラインY)を基準に、
-   検出した肩幅に合わせて画像をスケーリング・回転して重ねる。
---------------------------------------------------------- */
-function drawClothingImage(ctxTarget, itemKey, item, centerX, centerY, angle, shoulderWidthPx) {
+// 1人分の服を描画する。タップ判定に使うため、描画位置の情報を返す。
+// glow=true のときは、選択中の人だと分かるよう服の輪郭を光らせる。
+function drawClothing(ctxTarget, geom, itemKey, glow) {
+  const item = ITEMS[itemKey];
   const img = loadedImages[itemKey];
-  if (!img || !img.complete || img.naturalWidth === 0) return; // 読み込み待ち
+  if (!item || !img || !img.complete || img.naturalWidth === 0) return null; // 読み込み待ち
 
-  const anchor = item.anchor;
-  const multiplier = item.widthMultiplier || 1.0;
-  const scale = (shoulderWidthPx / anchor.shoulderWidth) * multiplier;
-
-  const drawW = anchor.imgWidth * scale;
-  const drawH = anchor.imgHeight * scale;
-  const offsetX = -anchor.shoulderCenterX * scale;
-  const offsetY = -anchor.shoulderY * scale;
+  const a = item.anchor;
+  const scale = (geom.shoulderWidthPx / a.shoulderWidth) * (item.widthMultiplier || 1.0);
+  const drawW = a.imgWidth * scale;
+  const drawH = a.imgHeight * scale;
+  const offsetX = -a.shoulderCenterX * scale;
+  const offsetY = -a.shoulderY * scale;
 
   ctxTarget.save();
-  ctxTarget.translate(centerX, centerY);
-  ctxTarget.rotate(angle);
+  ctxTarget.translate(geom.centerX, geom.centerY);
+  ctxTarget.rotate(geom.angle);
+  if (glow) {
+    ctxTarget.shadowColor = "rgba(94, 200, 168, 1)";
+    ctxTarget.shadowBlur = 36;
+    ctxTarget.drawImage(img, offsetX, offsetY, drawW, drawH);
+  }
   ctxTarget.drawImage(img, offsetX, offsetY, drawW, drawH);
   ctxTarget.restore();
+
+  return { scale, offsetX, offsetY, imgW: a.imgWidth, imgH: a.imgHeight };
 }
 
 /* ---------------------------------------------------------
-   4b. プレースホルダー(簡易シルエット)描画
+   5a. 人物の追跡
+   MediaPipeは「何人いるか」は返すが、フレームをまたいで同じ人かどうか
+   (ID)は返さない。そこで、前フレームの肩の位置・大きさと近い人を
+   「同じ人」とみなして番号(trackId)を引き継ぎ、人ごとに制服を記憶する。
 --------------------------------------------------------- */
-function drawClothingShape(ctxTarget, item, centerX, centerY, angle, shoulderWidth, torsoHeight) {
-  const bodyWidth = shoulderWidth * 1.9;
-  const bodyHeight = torsoHeight * 1.25;
+const TRACK_TTL_MS = 2500;   // 検出が途切れても、この時間内に戻れば同じ人として扱う
+const MATCH_MAX_DIST = 1.6;  // 肩幅の何倍まで動いたら「別の人」とみなすか
+let tracks = [];             // { id, cx, cy, size, lastSeen, itemKey }
+let nextTrackId = 1;
 
-  ctxTarget.save();
-  ctxTarget.translate(centerX, centerY);
-  ctxTarget.rotate(angle);
+function updateTracks(people, nowMs) {
+  const pairs = [];
+  people.forEach((p, pi) => {
+    tracks.forEach((t, ti) => {
+      const d = Math.hypot(p.cx - t.cx, p.cy - t.cy) / Math.max(p.size, t.size);
+      if (d < MATCH_MAX_DIST) pairs.push({ pi, ti, d });
+    });
+  });
+  pairs.sort((a, b) => a.d - b.d); // 近い組み合わせから順に確定する
 
-  // 胴体(簡易シャツシルエット)
-  ctxTarget.fillStyle = item.color;
-  ctxTarget.beginPath();
-  ctxTarget.moveTo(-bodyWidth / 2, -bodyHeight * 0.15);
-  ctxTarget.quadraticCurveTo(-bodyWidth / 2, bodyHeight * 0.75, -bodyWidth * 0.35, bodyHeight * 0.85);
-  ctxTarget.lineTo(bodyWidth * 0.35, bodyHeight * 0.85);
-  ctxTarget.quadraticCurveTo(bodyWidth / 2, bodyHeight * 0.75, bodyWidth / 2, -bodyHeight * 0.15);
-  ctxTarget.quadraticCurveTo(bodyWidth * 0.3, -bodyHeight * 0.35, 0, -bodyHeight * 0.28);
-  ctxTarget.quadraticCurveTo(-bodyWidth * 0.3, -bodyHeight * 0.35, -bodyWidth / 2, -bodyHeight * 0.15);
-  ctxTarget.closePath();
-  ctxTarget.fill();
-
-  // 襟(アクセント)
-  ctxTarget.fillStyle = item.accent;
-  ctxTarget.beginPath();
-  ctxTarget.ellipse(0, -bodyHeight * 0.22, bodyWidth * 0.14, bodyHeight * 0.08, 0, 0, Math.PI * 2);
-  ctxTarget.fill();
-
-  ctxTarget.restore();
+  const usedP = new Set();
+  const usedT = new Set();
+  for (const { pi, ti } of pairs) {
+    if (usedP.has(pi) || usedT.has(ti)) continue;
+    usedP.add(pi);
+    usedT.add(ti);
+    const t = tracks[ti];
+    const p = people[pi];
+    t.cx = p.cx; t.cy = p.cy; t.size = p.size; t.lastSeen = nowMs;
+    p.track = t;
+  }
+  // 既存の人に対応しなかった検出は、新しく現れた人。最初はデフォルトの制服を着る。
+  people.forEach((p, pi) => {
+    if (usedP.has(pi)) return;
+    const t = { id: nextTrackId++, cx: p.cx, cy: p.cy, size: p.size, lastSeen: nowMs, itemKey: defaultItemKey };
+    tracks.push(t);
+    p.track = t;
+  });
+  tracks = tracks.filter((t) => nowMs - t.lastSeen <= TRACK_TTL_MS);
 }
+
+/* ---------------------------------------------------------
+   5b. 制服の選択パネルと、タップした人の判定
+--------------------------------------------------------- */
+const pickerEl = document.getElementById("picker");
+const pickerRow = document.getElementById("pickerRow");
+const hintEl = document.getElementById("hint");
+let selectedTrackId = null;
+let hitTargets = []; // 直前のフレームで描画した人ごとの情報(タップ判定用)
+
+function buildPicker() {
+  pickerRow.innerHTML = "";
+  Object.entries(ITEMS).forEach(([key, item]) => {
+    const btn = document.createElement("button");
+    btn.dataset.key = key;
+    const img = document.createElement("img");
+    img.src = item.src;
+    img.alt = "";
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    btn.append(img, label);
+    btn.addEventListener("click", () => {
+      const t = tracks.find((t) => t.id === selectedTrackId);
+      if (t) t.itemKey = key; // 選ばれた人だけ着替える
+      closePicker();
+    });
+    pickerRow.appendChild(btn);
+  });
+}
+
+function openPicker(trackId) {
+  selectedTrackId = trackId;
+  const t = tracks.find((t) => t.id === trackId);
+  pickerRow.querySelectorAll("button").forEach((b) => {
+    b.classList.toggle("active", !!t && b.dataset.key === t.itemKey);
+  });
+  pickerEl.classList.add("show");
+  pickerEl.setAttribute("aria-hidden", "false");
+  hintEl.classList.add("hide");
+}
+
+function closePicker() {
+  selectedTrackId = null;
+  pickerEl.classList.remove("show");
+  pickerEl.setAttribute("aria-hidden", "true");
+}
+
+document.getElementById("pickerClose").addEventListener("click", closePicker);
+buildPicker();
+setTimeout(() => hintEl.classList.add("hide"), 8000);
+
+// 画面上のタップ位置 → Canvas内の座標(object-fit:contain の余白も考慮)
+function clientToCanvas(clientX, clientY) {
+  const r = overlay.getBoundingClientRect();
+  const s = Math.min(r.width / overlay.width, r.height / overlay.height);
+  const ox = r.left + (r.width - overlay.width * s) / 2;
+  const oy = r.top + (r.height - overlay.height * s) / 2;
+  return { x: (clientX - ox) / s, y: (clientY - oy) / s };
+}
+
+// 制服画像の「その位置の透明度」を調べる(透明な所=服ではない所は反応させない)
+const alphaCache = {};
+function alphaAt(itemKey, u, v) {
+  let e = alphaCache[itemKey];
+  if (!e) {
+    const img = loadedImages[itemKey];
+    if (!img || !img.complete || !img.naturalWidth) return 0;
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const cx = c.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(img, 0, 0);
+    try {
+      e = { w: c.width, h: c.height, data: cx.getImageData(0, 0, c.width, c.height).data };
+    } catch (err) {
+      e = { w: c.width, h: c.height, data: null };
+    }
+    alphaCache[itemKey] = e;
+  }
+  if (!e.data) return 255; // 読み取れない環境では、画像の矩形全体を当たり判定にする
+  const iw = ITEMS[itemKey].anchor.imgWidth;
+  const ih = ITEMS[itemKey].anchor.imgHeight;
+  const x = Math.min(e.w - 1, Math.max(0, Math.floor((u * e.w) / iw)));
+  const y = Math.min(e.h - 1, Math.max(0, Math.floor((v * e.h) / ih)));
+  return e.data[(y * e.w + x) * 4 + 3];
+}
+
+// タップ位置にある人(のtrackId)を返す。なければnull。
+function hitTest(px, py) {
+  // 1) 服の上をタップ(手前の人=後から描いた人を優先)
+  for (let i = hitTargets.length - 1; i >= 0; i--) {
+    const t = hitTargets[i];
+    const dx = px - t.geom.centerX;
+    const dy = py - t.geom.centerY;
+    const c = Math.cos(-t.geom.angle);
+    const s = Math.sin(-t.geom.angle);
+    const lx = dx * c - dy * s;
+    const ly = dx * s + dy * c;
+    const u = (lx - t.g.offsetX) / t.g.scale;
+    const v = (ly - t.g.offsetY) / t.g.scale;
+    if (u < 0 || v < 0 || u >= t.g.imgW || v >= t.g.imgH) continue;
+    if (alphaAt(t.itemKey, u, v) > 30) return t.trackId;
+  }
+  // 2) 服の少し外側でも、体(肩〜腰)の近くなら反応させる(押しやすさのため)
+  let best = null;
+  let bestD = Infinity;
+  for (const t of hitTargets) {
+    const { centerX: ax, centerY: ay, hipX: bx, hipY: by, shoulderWidthPx } = t.geom;
+    const vx = bx - ax, vy = by - ay;
+    const len2 = vx * vx + vy * vy || 1;
+    const k = Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / len2));
+    const d = Math.hypot(px - (ax + vx * k), py - (ay + vy * k));
+    if (d < shoulderWidthPx * 0.8 && d < bestD) { best = t.trackId; bestD = d; }
+  }
+  return best;
+}
+
+overlay.addEventListener("click", (ev) => {
+  const p = clientToCanvas(ev.clientX, ev.clientY);
+  const id = hitTest(p.x, p.y);
+  if (id === null) {
+    closePicker(); // 人のいない所をタップしたらパネルを閉じる
+  } else {
+    openPicker(id);
+  }
+});
 
 /* ---------------------------------------------------------
    5. メインループ
    カメラ映像(横長)の中央部分を画面の縦横比に合わせて切り出して
-   このCanvasに毎フレーム描画し、その上に服を重ね描きする。
+   このCanvasに毎フレーム描画し、その上に人ごとの服を重ね描きする。
    回転は行わない。videoタグ自体は非表示(opacity:0)で、
    単なる映像ソースとしてのみ使う。
 --------------------------------------------------------- */
@@ -743,7 +707,7 @@ function renderLoop() {
 
       // 検出された全員分について、切り出し後のCanvas座標系に変換する。
       // ランドマークは「切り出す前の生の映像全体」基準の正規化座標なので、
-      // x座標を切り出し範囲基準に直してから描画に渡す。
+      // x座標を切り出し範囲基準に直してから使う。
       const people = [];
       for (const lms of result.landmarks || []) {
         const remapped = lms.map((lm) => ({
@@ -758,18 +722,27 @@ function renderLoop() {
         if ((ls.visibility ?? 1) < 0.4 || (rs.visibility ?? 1) < 0.4) continue;
 
         // 肩の中心が切り出し範囲の外(画面外)にいる人は描画しない
-        const centerX = (ls.x + rs.x) / 2;
-        if (centerX < -0.1 || centerX > 1.1) continue;
+        const cx = (ls.x + rs.x) / 2;
+        if (cx < -0.1 || cx > 1.1) continue;
 
-        // 肩幅(画面上のピクセル)。手前にいる人ほど大きい。
-        const shoulderPx = Math.hypot((ls.x - rs.x) * cropWidth, (ls.y - rs.y) * rawH);
-        people.push({ remapped, shoulderPx });
+        const geom = getBodyGeometry(remapped, cropWidth, rawH);
+        if (!geom) continue;
+        people.push({ geom, cx: geom.centerX, cy: geom.centerY, size: geom.shoulderWidthPx });
+      }
+
+      // 前フレームの人と対応づけて、人ごとの制服を引き継ぐ(人が0人でも期限切れの掃除をする)
+      updateTracks(people, nowMs);
+      if (selectedTrackId !== null && !tracks.some((t) => t.id === selectedTrackId)) {
+        closePicker(); // 選択中の人が画面から消えた
       }
 
       // 奥(肩幅が小さい=遠い)の人から先に描き、手前の人の服が上に重なるようにする
-      people.sort((a, b) => a.shoulderPx - b.shoulderPx);
-      for (const person of people) {
-        drawClothing(ctx, person.remapped, cropWidth, rawH);
+      people.sort((a, b) => a.size - b.size);
+      hitTargets = [];
+      for (const p of people) {
+        const itemKey = p.track.itemKey;
+        const g = drawClothing(ctx, p.geom, itemKey, p.track.id === selectedTrackId);
+        if (g) hitTargets.push({ trackId: p.track.id, itemKey, geom: p.geom, g });
       }
 
       statusEl.textContent = people.length > 0 ? "" : "人物を検出中...";
@@ -792,6 +765,9 @@ const closeBtn = document.getElementById("closeBtn");
 let lastCaptureBlob = null;
 
 shutterBtn.addEventListener("click", async () => {
+  // 選択中の光る輪郭が写り込まないよう、パネルを閉じて次の描画を待ってから撮影する
+  closePicker();
+  await new Promise((r) => setTimeout(r, 150));
   const captureCanvas = document.createElement("canvas");
   captureCanvas.width = overlay.width;
   captureCanvas.height = overlay.height;
@@ -809,7 +785,7 @@ shutterBtn.addEventListener("click", async () => {
 });
 
 saveBtn.addEventListener("click", async () => {
-  const filename = `ar-tryon-${currentItemKey}-${Date.now()}.png`;
+  const filename = `ar-tryon-${Date.now()}.png`;
 
   // iOSのSafariは<a download>だけだとカメラロールに保存されないため、
   // 対応環境ではWeb Share API(共有シート経由の「画像を保存」)を優先する。
