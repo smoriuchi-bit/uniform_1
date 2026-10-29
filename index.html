@@ -440,6 +440,12 @@ let poseLandmarker;
 // 増やすほど処理が重くなる(スマホでは4人程度が目安)。
 const MAX_PEOPLE = 4;
 
+// 確認用の切り替え(URLに付けて使う)
+//   ?debug=1      ... 画面左上に「検出◯人 / 採用◯人 / 表示◯人」を出す
+//   ?pose=image   ... 毎フレーム独立に検出するモード(重いが、人の取りこぼしが減る場合がある)
+const POSE_MODE = new URLSearchParams(location.search).get("pose") === "image" ? "IMAGE" : "VIDEO";
+const DEBUG = new URLSearchParams(location.search).get("debug") === "1";
+
 async function setupPose() {
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
@@ -450,8 +456,13 @@ async function setupPose() {
         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       delegate: "GPU",
     },
-    runningMode: "VIDEO",
+    runningMode: POSE_MODE,
     numPoses: MAX_PEOPLE,
+    // 既定値(0.5)だと2人目以降が検出から漏れやすいため、少し緩める。
+    // 緩めた分の誤検出・二重検出は、描画側で除去している。
+    minPoseDetectionConfidence: 0.3,
+    minPosePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
   });
 }
 
@@ -487,7 +498,7 @@ function getBodyGeometry(landmarks, w, h) {
 
 // 1人分の服を描画する。タップ判定に使うため、描画位置の情報を返す。
 // glow=true のときは、選択中の人だと分かるよう服の輪郭を光らせる。
-function drawClothing(ctxTarget, geom, itemKey, glow) {
+function drawClothing(ctxTarget, geom, itemKey, glow, alpha = 1) {
   const item = ITEMS[itemKey];
   const img = loadedImages[itemKey];
   if (!item || !img || !img.complete || img.naturalWidth === 0) return null; // 読み込み待ち
@@ -500,6 +511,7 @@ function drawClothing(ctxTarget, geom, itemKey, glow) {
   const offsetY = -a.shoulderY * scale;
 
   ctxTarget.save();
+  ctxTarget.globalAlpha = alpha;
   ctxTarget.translate(geom.centerX, geom.centerY);
   ctxTarget.rotate(geom.angle);
   if (glow) {
@@ -520,9 +532,25 @@ function drawClothing(ctxTarget, geom, itemKey, glow) {
    「同じ人」とみなして番号(trackId)を引き継ぎ、人ごとに制服を記憶する。
 --------------------------------------------------------- */
 const TRACK_TTL_MS = 2500;   // 検出が途切れても、この時間内に戻れば同じ人として扱う
+const HOLD_FULL_MS = 250;    // 検出が途切れても、この時間までは服をそのまま表示し続ける
+const HOLD_FADE_MS = 800;    // この時間にかけて徐々に薄くして消す(人が去った時に残像が居座らないため)
+const SMOOTH_K = 0.55;       // 位置の平滑化(大きいほど追従が速く、小さいほど滑らか)
 const MATCH_MAX_DIST = 1.6;  // 肩幅の何倍まで動いたら「別の人」とみなすか
 let tracks = [];             // { id, cx, cy, size, lastSeen, itemKey }
 let nextTrackId = 1;
+
+function smoothGeom(prev, next) {
+  if (!prev) return { ...next };
+  const m = (a, b) => a + (b - a) * SMOOTH_K;
+  return {
+    centerX: m(prev.centerX, next.centerX),
+    centerY: m(prev.centerY, next.centerY),
+    shoulderWidthPx: m(prev.shoulderWidthPx, next.shoulderWidthPx),
+    angle: m(prev.angle, next.angle),
+    hipX: m(prev.hipX, next.hipX),
+    hipY: m(prev.hipY, next.hipY),
+  };
+}
 
 function updateTracks(people, nowMs) {
   const pairs = [];
@@ -543,12 +571,14 @@ function updateTracks(people, nowMs) {
     const t = tracks[ti];
     const p = people[pi];
     t.cx = p.cx; t.cy = p.cy; t.size = p.size; t.lastSeen = nowMs;
+    t.geom = smoothGeom(t.geom, p.geom);
     p.track = t;
   }
   // 既存の人に対応しなかった検出は、新しく現れた人。最初はデフォルトの制服を着る。
   people.forEach((p, pi) => {
     if (usedP.has(pi)) return;
-    const t = { id: nextTrackId++, cx: p.cx, cy: p.cy, size: p.size, lastSeen: nowMs, itemKey: defaultItemKey };
+    const t = { id: nextTrackId++, cx: p.cx, cy: p.cy, size: p.size, lastSeen: nowMs,
+                itemKey: defaultItemKey, geom: { ...p.geom } };
     tracks.push(t);
     p.track = t;
   });
@@ -695,7 +725,9 @@ function renderLoop() {
     const nowMs = performance.now();
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
-      const result = poseLandmarker.detectForVideo(video, nowMs);
+      const result = POSE_MODE === "IMAGE"
+        ? poseLandmarker.detect(video)
+        : poseLandmarker.detectForVideo(video, nowMs);
 
       const rawW = video.videoWidth;
       const rawH = video.videoHeight;
@@ -718,8 +750,10 @@ function renderLoop() {
         const rs = remapped[12];
         if (!ls || !rs) continue;
 
-        // 肩が十分に見えていない検出(ノイズや、画面端で切れた人)は除外
-        if ((ls.visibility ?? 1) < 0.4 || (rs.visibility ?? 1) < 0.4) continue;
+        // 肩がほとんど見えていない検出(ノイズ)は除外。
+        // 厳しくしすぎると2人目が出たり消えたりするので、緩めにしている。
+        const vis = ((ls.visibility ?? 1) + (rs.visibility ?? 1)) / 2;
+        if ((ls.visibility ?? 1) < 0.15 || (rs.visibility ?? 1) < 0.15) continue;
 
         // 肩の中心が切り出し範囲の外(画面外)にいる人は描画しない
         const cx = (ls.x + rs.x) / 2;
@@ -727,8 +761,22 @@ function renderLoop() {
 
         const geom = getBodyGeometry(remapped, cropWidth, rawH);
         if (!geom) continue;
-        people.push({ geom, cx: geom.centerX, cy: geom.centerY, size: geom.shoulderWidthPx });
+        people.push({ geom, cx: geom.centerX, cy: geom.centerY, size: geom.shoulderWidthPx, vis });
       }
+      const rawCount = people.length;
+
+      // 検出を緩めた副作用で、1人が2つの姿勢として検出されることがあるため、
+      // ほぼ同じ位置の検出は、肩の見えている度合いが高い方だけ残す。
+      people.sort((a, b) => b.vis - a.vis);
+      const uniquePeople = [];
+      for (const p of people) {
+        const dup = uniquePeople.some(
+          (q) => Math.hypot(p.cx - q.cx, p.cy - q.cy) < 0.5 * Math.max(p.size, q.size)
+        );
+        if (!dup) uniquePeople.push(p);
+      }
+      people.length = 0;
+      people.push(...uniquePeople);
 
       // 前フレームの人と対応づけて、人ごとの制服を引き継ぐ(人が0人でも期限切れの掃除をする)
       updateTracks(people, nowMs);
@@ -736,16 +784,29 @@ function renderLoop() {
         closePicker(); // 選択中の人が画面から消えた
       }
 
-      // 奥(肩幅が小さい=遠い)の人から先に描き、手前の人の服が上に重なるようにする
-      people.sort((a, b) => a.size - b.size);
-      hitTargets = [];
-      for (const p of people) {
-        const itemKey = p.track.itemKey;
-        const g = drawClothing(ctx, p.geom, itemKey, p.track.id === selectedTrackId);
-        if (g) hitTargets.push({ trackId: p.track.id, itemKey, geom: p.geom, g });
+      // 描画対象 = 今フレームで検出された人 + 直前まで見えていたが今フレームだけ検出が
+      // 途切れた人。後者は最後の位置で服を表示し続け、ちらつき(服が一瞬消える/入れ替わる)を防ぐ。
+      const drawList = [];
+      for (const t of tracks) {
+        const gap = nowMs - t.lastSeen;
+        if (gap > HOLD_FADE_MS || !t.geom) continue;
+        const alpha = gap <= HOLD_FULL_MS ? 1 : 1 - (gap - HOLD_FULL_MS) / (HOLD_FADE_MS - HOLD_FULL_MS);
+        drawList.push({ t, alpha });
       }
 
-      statusEl.textContent = people.length > 0 ? "" : "人物を検出中...";
+      // 奥(肩幅が小さい=遠い)の人から先に描き、手前の人の服が上に重なるようにする
+      drawList.sort((a, b) => a.t.geom.shoulderWidthPx - b.t.geom.shoulderWidthPx);
+      hitTargets = [];
+      for (const { t, alpha } of drawList) {
+        const g = drawClothing(ctx, t.geom, t.itemKey, t.id === selectedTrackId, alpha);
+        if (g) hitTargets.push({ trackId: t.id, itemKey: t.itemKey, geom: t.geom, g });
+      }
+
+      if (DEBUG) {
+        statusEl.textContent = `検出 ${rawCount}人 / 採用 ${people.length}人 / 表示 ${drawList.length}人`;
+      } else {
+        statusEl.textContent = drawList.length > 0 ? "" : "人物を検出中...";
+      }
     }
   }
   requestAnimationFrame(renderLoop);
