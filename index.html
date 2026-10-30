@@ -220,30 +220,22 @@
     color: var(--muted);
     z-index: 15;
   }
-  /* 横向き(ランドスケープ)のときのレイアウト */
-  @media (orientation: landscape) {
-    #topBar {
-      padding-left: calc(16px + env(safe-area-inset-left, 0px));
-      padding-right: 130px;
-    }
-    #status {
-      left: calc(16px + env(safe-area-inset-left, 0px));
-    }
-    #controls {
-      top: 0; bottom: 0; left: auto; right: 0;
-      width: calc(112px + env(safe-area-inset-right, 0px));
-      padding: 16px calc(16px + env(safe-area-inset-right, 0px)) 16px 16px;
-      flex-direction: column;
-      background: linear-gradient(to left, rgba(0,0,0,.6), transparent);
-    }
-    #picker {
-      left: calc(12px + env(safe-area-inset-left, 0px));
-      bottom: 12px;
-      transform: translate(0, 12px);
-      width: min(62%, 460px);
-    }
-    #picker.show { transform: translate(0, 0); }
-    #picker .picker-row button img { height: 52px; }
+  #landscapeNotice {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--text);
+    background: rgba(5, 6, 8, 0.97);
+    z-index: 40;
+  }
+  #landscapeNotice.show {
+    display: flex;
   }
 </style>
 </head>
@@ -275,6 +267,10 @@
     カメラへのアクセスを許可してください。<br />
     ※このデモはHTTPS環境(またはlocalhost)で動作します。file:// で直接開いた場合はカメラが動作しません。
   </div>
+</div>
+
+<div id="landscapeNotice">
+  📱 スマホを縦向きにしてご利用ください
 </div>
 
 <div id="preview">
@@ -964,16 +960,36 @@ setTimeout(updateAppHeight, 300);
 
 /* ---------------------------------------------------------
    8. 画面の向き
-   縦向き・横向きのどちらでも使える。スマホを回すと、画面の縦横比に合わせて
-   映像の切り出し範囲(updateCropParams)とレイアウト(CSSの@media)が切り替わる。
-   iPhoneで「画面縦向きのロック」がオンだと、ブラウザは向きの変化を検知できない。
+   このアプリは縦向き固定で使う。ブラウザの制約上、確実な縦向き固定は
+   できない(特にiOS Safariは screen.orientation.lock 自体が未対応)ため:
+   - Android Chrome等で使える場合はベストエフォートでロックを試みる
+   - どのブラウザでも、横向きになったら警告を表示して気づかせる
+   の二段構えにしている。
 --------------------------------------------------------- */
+const landscapeNotice = document.getElementById("landscapeNotice");
+
+function updateOrientationNotice() {
+  const isLandscape = window.matchMedia("(orientation: landscape)").matches;
+  landscapeNotice.classList.toggle("show", isLandscape);
+}
+window.addEventListener("resize", updateOrientationNotice);
+window.addEventListener("orientationchange", updateOrientationNotice);
+updateOrientationNotice();
+
+function tryLockPortrait() {
+  if (screen.orientation && screen.orientation.lock) {
+    // 対応ブラウザでも、フルスクリーンでない場合は失敗することが多いため
+    // エラーは黙って無視する(横向き警告が保険として機能する)。
+    screen.orientation.lock("portrait").catch(() => {});
+  }
+}
 
 /* ---------------------------------------------------------
    9. 起動
 --------------------------------------------------------- */
 (async function init() {
   try {
+    tryLockPortrait();
     await setupCamera();
     statusEl.textContent = "姿勢推定モデルを読み込み中...";
     await setupPose();
