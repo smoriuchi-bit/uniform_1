@@ -246,14 +246,14 @@
   <canvas id="overlay"></canvas>
 
   <div id="topBar">
-    <div class="item-name" id="hint">人物の服をタップすると、その人だけ着せ替えできます</div>
+    <div class="item-name" id="hint">服をタップすると、制服を着せ替えできます</div>
   </div>
   <div id="status">姿勢推定を初期化中...</div>
 
-  <!-- 人物の服をタップすると、その人の制服を選ぶパネルが開く -->
+  <!-- 服をタップすると、制服を選ぶパネルが開く -->
   <div id="picker" aria-hidden="true">
     <div class="picker-head">
-      <span>この人の制服を選ぶ</span>
+      <span>制服を選ぶ</span>
       <button id="pickerClose" aria-label="閉じる">✕</button>
     </div>
     <div class="picker-row" id="pickerRow"></div>
@@ -383,8 +383,8 @@ Object.entries(ITEMS).forEach(([key, item]) => {
 });
 
 const params = new URLSearchParams(location.search);
-// 新しく画面に写った人が最初に着る制服。QRコードのURL(?item=キー名)で指定できる。
-// 指定がなければ女子ブレザー。人物をタップして個別に変更できる。
+// 最初に着る制服。QRコードのURL(?item=キー名)で指定できる。
+// 指定がなければ女子ブレザー。服をタップして変更できる。
 const defaultItemKey = params.get("item") && ITEMS[params.get("item")]
   ? params.get("item")
   : "seifuku_blazer";
@@ -449,14 +449,8 @@ async function setupCamera() {
 --------------------------------------------------------- */
 let poseLandmarker;
 
-// 同時に検出・着せ替えする最大人数。
-// 増やすほど処理が重くなる(スマホでは4人程度が目安)。
-const MAX_PEOPLE = 4;
-
 // 確認用の切り替え(URLに付けて使う)
-//   ?debug=1      ... 画面左上に「検出◯人 / 採用◯人 / 表示◯人」を出す
-//   ?pose=image   ... 毎フレーム独立に検出するモード(重いが、人の取りこぼしが減る場合がある)
-const POSE_MODE = new URLSearchParams(location.search).get("pose") === "image" ? "IMAGE" : "VIDEO";
+//   ?debug=1 ... 肩の線(黄)・体の軸(水色)と各角度を画面に重ねて表示する
 const DEBUG = new URLSearchParams(location.search).get("debug") === "1";
 
 async function setupPose() {
@@ -469,13 +463,8 @@ async function setupPose() {
         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       delegate: "GPU",
     },
-    runningMode: POSE_MODE,
-    numPoses: MAX_PEOPLE,
-    // 既定値(0.5)だと2人目以降が検出から漏れやすいため、少し緩める。
-    // 緩めた分の誤検出・二重検出は、描画側で除去している。
-    minPoseDetectionConfidence: 0.3,
-    minPosePresenceConfidence: 0.3,
-    minTrackingConfidence: 0.3,
+    runningMode: "VIDEO",
+    numPoses: 1, // 1人だけを対象にする(複数人の同時撮影は行わない)
   });
 }
 
@@ -584,18 +573,16 @@ function drawClothing(ctxTarget, geom, itemKey, glow, alpha = 1) {
 }
 
 /* ---------------------------------------------------------
-   5a. 人物の追跡
-   MediaPipeは「何人いるか」は返すが、フレームをまたいで同じ人かどうか
-   (ID)は返さない。そこで、前フレームの肩の位置・大きさと近い人を
-   「同じ人」とみなして番号(trackId)を引き継ぎ、人ごとに制服を記憶する。
+   5a. 対象の人物の状態
+   対象は1人だけ。その人が選んだ制服(itemKey)と、服を重ねる位置・傾きを
+   覚えておく。検出が一瞬途切れても服が消えないよう、最後の位置で表示し続ける。
 --------------------------------------------------------- */
-const TRACK_TTL_MS = 2500;   // 検出が途切れても、この時間内に戻れば同じ人として扱う
+const TRACK_TTL_MS = 10000;  // 誰も写らない状態がこの時間続くと、次に写る人はデフォルトの制服から始める
 const HOLD_FULL_MS = 250;    // 検出が途切れても、この時間までは服をそのまま表示し続ける
 const HOLD_FADE_MS = 800;    // この時間にかけて徐々に薄くして消す(人が去った時に残像が居座らないため)
 const SMOOTH_K = 0.55;       // 位置の平滑化(大きいほど追従が速く、小さいほど滑らか)
 const ANGLE_SMOOTH_K = 0.3;  // 傾きは細かいブレが目立つので、位置より強めに平滑化する
-const MATCH_MAX_DIST = 1.6;  // 肩幅の何倍まで動いたら「別の人」とみなすか
-let tracks = [];             // { id, cx, cy, size, lastSeen, itemKey }
+let tracks = [];             // 常に0〜1件: { id, cx, cy, size, lastSeen, itemKey, geom, raw }
 let nextTrackId = 1;
 
 function smoothGeom(prev, next) {
@@ -612,36 +599,23 @@ function smoothGeom(prev, next) {
 }
 
 function updateTracks(people, nowMs) {
-  const pairs = [];
-  people.forEach((p, pi) => {
-    tracks.forEach((t, ti) => {
-      const d = Math.hypot(p.cx - t.cx, p.cy - t.cy) / Math.max(p.size, t.size);
-      if (d < MATCH_MAX_DIST) pairs.push({ pi, ti, d });
-    });
-  });
-  pairs.sort((a, b) => a.d - b.d); // 近い組み合わせから順に確定する
-
-  const usedP = new Set();
-  const usedT = new Set();
-  for (const { pi, ti } of pairs) {
-    if (usedP.has(pi) || usedT.has(ti)) continue;
-    usedP.add(pi);
-    usedT.add(ti);
-    const t = tracks[ti];
-    const p = people[pi];
-    t.cx = p.cx; t.cy = p.cy; t.size = p.size; t.lastSeen = nowMs;
-    t.geom = smoothGeom(t.geom, p.geom);
+  // 検出が複数返ってきた場合は、いちばん大きく(手前に)写っている人だけを使う
+  const p = people.slice().sort((a, b) => b.size - a.size)[0];
+  if (p) {
+    let t = tracks[0];
+    if (!t) {
+      t = { id: nextTrackId++, cx: p.cx, cy: p.cy, size: p.size, lastSeen: nowMs,
+            itemKey: defaultItemKey, geom: { ...p.geom } };
+      tracks = [t];
+    } else {
+      // しばらく見えなかった後は、滑らかに追従させず新しい位置へそのまま移す
+      t.geom = nowMs - t.lastSeen > HOLD_FADE_MS ? { ...p.geom } : smoothGeom(t.geom, p.geom);
+      t.cx = p.cx; t.cy = p.cy; t.size = p.size;
+    }
+    t.lastSeen = nowMs;
     t.raw = p.geom; // 確認表示用(平滑化前の肩・腰の位置)
     p.track = t;
   }
-  // 既存の人に対応しなかった検出は、新しく現れた人。最初はデフォルトの制服を着る。
-  people.forEach((p, pi) => {
-    if (usedP.has(pi)) return;
-    const t = { id: nextTrackId++, cx: p.cx, cy: p.cy, size: p.size, lastSeen: nowMs,
-                itemKey: defaultItemKey, geom: { ...p.geom } };
-    tracks.push(t);
-    p.track = t;
-  });
   tracks = tracks.filter((t) => nowMs - t.lastSeen <= TRACK_TTL_MS);
 }
 
@@ -667,7 +641,7 @@ function buildPicker() {
     btn.append(img, label);
     btn.addEventListener("click", () => {
       const t = tracks.find((t) => t.id === selectedTrackId);
-      if (t) t.itemKey = key; // 選ばれた人だけ着替える
+      if (t) t.itemKey = key; // 選んだ制服に着替える
       closePicker();
     });
     pickerRow.appendChild(btn);
@@ -774,7 +748,7 @@ overlay.addEventListener("click", (ev) => {
 /* ---------------------------------------------------------
    5. メインループ
    カメラ映像(横長)の中央部分を画面の縦横比に合わせて切り出して
-   このCanvasに毎フレーム描画し、その上に人ごとの服を重ね描きする。
+   このCanvasに毎フレーム描画し、その上に服を重ね描きする。
    回転は行わない。videoタグ自体は非表示(opacity:0)で、
    単なる映像ソースとしてのみ使う。
 --------------------------------------------------------- */
@@ -786,9 +760,7 @@ function renderLoop() {
     const nowMs = performance.now();
     if (video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
-      const result = POSE_MODE === "IMAGE"
-        ? poseLandmarker.detect(video)
-        : poseLandmarker.detectForVideo(video, nowMs);
+      const result = poseLandmarker.detectForVideo(video, nowMs);
 
       const cropSig = `${video.videoWidth}x${video.videoHeight}@${window.innerWidth}x${window.innerHeight}`;
       if (cropSig !== lastCropSig) {
@@ -804,10 +776,11 @@ function renderLoop() {
       // 横長映像の中央部分だけを、そのままの向きで切り出して描画(回転なし)
       ctx.drawImage(video, srcX, 0, cropWidth, rawH, 0, 0, cropWidth, rawH);
 
-      // 検出された全員分について、切り出し後のCanvas座標系に変換する。
+      // 検出された人について、切り出し後のCanvas座標系に変換する。
       // ランドマークは「切り出す前の生の映像全体」基準の正規化座標なので、
       // x座標を切り出し範囲基準に直してから使う。
       const people = [];
+      const rawCount = (result.landmarks || []).length;
       for (const lms of result.landmarks || []) {
         const remapped = lms.map((lm) => ({
           ...lm,
@@ -817,42 +790,26 @@ function renderLoop() {
         const rs = remapped[12];
         if (!ls || !rs) continue;
 
-        // 肩がほとんど見えていない検出(ノイズ)は除外。
-        // 厳しくしすぎると2人目が出たり消えたりするので、緩めにしている。
-        const vis = ((ls.visibility ?? 1) + (rs.visibility ?? 1)) / 2;
-        if ((ls.visibility ?? 1) < 0.15 || (rs.visibility ?? 1) < 0.15) continue;
+        // 肩がほとんど見えていない検出(ノイズ)は除外
+        if ((ls.visibility ?? 1) < 0.4 || (rs.visibility ?? 1) < 0.4) continue;
 
-        // 肩の中心が切り出し範囲の外(画面外)にいる人は描画しない
+        // 肩の中心が切り出し範囲の外(画面外)にいる場合は描画しない
         const cx = (ls.x + rs.x) / 2;
         if (cx < -0.1 || cx > 1.1) continue;
 
         const geom = getBodyGeometry(remapped, cropWidth, rawH);
         if (!geom) continue;
-        people.push({ geom, cx: geom.centerX, cy: geom.centerY, size: geom.shoulderWidthPx, vis });
+        people.push({ geom, cx: geom.centerX, cy: geom.centerY, size: geom.shoulderWidthPx });
       }
-      const rawCount = people.length;
 
-      // 検出を緩めた副作用で、1人が2つの姿勢として検出されることがあるため、
-      // ほぼ同じ位置の検出は、肩の見えている度合いが高い方だけ残す。
-      people.sort((a, b) => b.vis - a.vis);
-      const uniquePeople = [];
-      for (const p of people) {
-        const dup = uniquePeople.some(
-          (q) => Math.hypot(p.cx - q.cx, p.cy - q.cy) < 0.5 * Math.max(p.size, q.size)
-        );
-        if (!dup) uniquePeople.push(p);
-      }
-      people.length = 0;
-      people.push(...uniquePeople);
-
-      // 前フレームの人と対応づけて、人ごとの制服を引き継ぐ(人が0人でも期限切れの掃除をする)
+      // 対象の人の状態(選んだ制服・位置・傾き)を更新する(誰も写っていなくても期限切れの掃除をする)
       updateTracks(people, nowMs);
       if (selectedTrackId !== null && !tracks.some((t) => t.id === selectedTrackId)) {
         closePicker(); // 選択中の人が画面から消えた
       }
 
-      // 描画対象 = 今フレームで検出された人 + 直前まで見えていたが今フレームだけ検出が
-      // 途切れた人。後者は最後の位置で服を表示し続け、ちらつき(服が一瞬消える/入れ替わる)を防ぐ。
+      // 今フレームで検出された場合はもちろん、直前まで見えていて今フレームだけ検出が
+      // 途切れた場合も、最後の位置で服を表示し続けて、ちらつき(服が一瞬消える)を防ぐ。
       const drawList = [];
       for (const t of tracks) {
         const gap = nowMs - t.lastSeen;
@@ -861,8 +818,6 @@ function renderLoop() {
         drawList.push({ t, alpha });
       }
 
-      // 奥(肩幅が小さい=遠い)の人から先に描き、手前の人の服が上に重なるようにする
-      drawList.sort((a, b) => a.t.geom.shoulderWidthPx - b.t.geom.shoulderWidthPx);
       hitTargets = [];
       for (const { t, alpha } of drawList) {
         const g = drawClothing(ctx, t.geom, t.itemKey, t.id === selectedTrackId, alpha);
@@ -871,7 +826,7 @@ function renderLoop() {
       }
 
       if (DEBUG) {
-        statusEl.textContent = `検出 ${rawCount}人 / 採用 ${people.length}人 / 表示 ${drawList.length}人`;
+        statusEl.textContent = `検出 ${rawCount}人 / 表示 ${drawList.length}人`;
       } else {
         statusEl.textContent = drawList.length > 0 ? "" : "人物を検出中...";
       }
